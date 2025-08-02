@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useRef } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Badge } from "@/components/ui/badge"
@@ -19,7 +19,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog"
-import { Shield, AlertTriangle, Activity, Zap, Brain, Network, Globe, FileText, Key, Users, Copy, Loader2, Sun, Moon } from "lucide-react"
+import { Shield, AlertTriangle, Activity, Zap, Brain, Network, Globe, FileText, Key, Users, Copy, Loader2 } from "lucide-react"
 import { useChat } from "ai/react"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
@@ -42,6 +42,14 @@ interface ApiKeys {
   mistral: string
 }
 
+type AttackEvent = {
+  id: number
+  vector: string
+  severity: string
+  success: boolean
+  time: string
+}
+
 export default function BlueTeamDefender() {
   const [selectedProvider, setSelectedProvider] = useState("groq")
   const [threatLevel, setThreatLevel] = useState(2)
@@ -51,6 +59,108 @@ export default function BlueTeamDefender() {
   const [isDefendersActive, setIsDefendersActive] = useState(false)
   const [configOpen, setConfigOpen] = useState(false)
   const { toast } = useToast()
+
+  // Oblivion simulation state
+  const [simulationActive, setSimulationActive] = useState(false)
+  const [attackEvents, setAttackEvents] = useState<AttackEvent[]>([])
+  const [blockedCount, setBlockedCount] = useState(0)
+  const [successCount, setSuccessCount] = useState(0)
+  const [intensityLevel, setIntensityLevel] = useState(0)
+  const simulationIntervalRef = useRef<NodeJS.Timeout | null>(null)
+  const attackIdRef = useRef(0)
+  const attackTimestampsRef = useRef<number[]>([])
+
+  // Confetti
+  const launchConfetti = async () => {
+    if (typeof window !== "undefined") {
+      const confetti = (await import("canvas-confetti")).default
+      confetti({ spread: 120, origin: { y: 0.3 } })
+    }
+  }
+
+  // Calculate attack intensity as attacks per minute (scaled 0-100)
+  useEffect(() => {
+    const now = Date.now()
+    attackTimestampsRef.current = attackEvents.map(ev => {
+      // reconstruct timestamps from time string, fallback to now
+      const d = new Date()
+      const [h, m, s] = ev.time.split(":").map(Number)
+      d.setHours(h, m, s)
+      return d.getTime()
+    })
+    const windowMs = 60 * 1000
+    const cutoff = now - windowMs
+    const recent = attackTimestampsRef.current.filter(t => t > cutoff).length
+    setIntensityLevel(Math.min(100, Math.round((recent / 10) * 100)))
+  }, [attackEvents])
+
+  function startOblivionSimulation() {
+    setSimulationActive(true)
+    setAttackEvents([])
+    setBlockedCount(0)
+    setSuccessCount(0)
+    attackIdRef.current = 0
+    if (simulationIntervalRef.current) clearInterval(simulationIntervalRef.current)
+
+    simulationIntervalRef.current = setInterval(() => {
+      const vectors = [
+        "SQL Injection",
+        "Privilege Escalation",
+        "Zero-day Exploit",
+        "Phishing",
+        "Lateral Movement",
+      ]
+      const severities = ["Critical", "High", "Medium"]
+      const vector = vectors[Math.floor(Math.random() * vectors.length)]
+      const severity = severities[Math.floor(Math.random() * severities.length)]
+      const now = new Date()
+      const time = now.toLocaleTimeString("en-US", { hour12: false })
+      const success = !isDefendersActive && Math.random() < 0.3
+      const id = ++attackIdRef.current
+
+      const event: AttackEvent = { id, vector, severity, success, time }
+
+      setAttackEvents(prev => {
+        const arr = [event, ...prev]
+        return arr.length > 30 ? arr.slice(0, 30) : arr
+      })
+      if (success) {
+        setSuccessCount(cnt => cnt + 1)
+      } else {
+        setBlockedCount(cnt => {
+          const next = cnt + 1
+          // Confetti for milestone blocks
+          if (next % 15 === 0 && next > 0) launchConfetti()
+          return next
+        })
+      }
+
+      // Toast on critical or successful attack
+      if (severity === "Critical" || success) {
+        toast({
+          title: "Oblivion breach attempt",
+          description: `${vector} (${severity})`,
+          variant: success ? "destructive" : "default",
+        })
+      }
+    }, 2500)
+  }
+
+  // Stop simulation & cleanup
+  function stopOblivionSimulation() {
+    setSimulationActive(false)
+    if (simulationIntervalRef.current) {
+      clearInterval(simulationIntervalRef.current)
+      simulationIntervalRef.current = null
+    }
+  }
+
+  // Cleanup interval on unmount
+  useEffect(() => {
+    return () => {
+      if (simulationIntervalRef.current) clearInterval(simulationIntervalRef.current)
+    }
+  }, [])
 
   // Load API keys from localStorage on mount
   useEffect(() => {
@@ -238,14 +348,14 @@ export default function BlueTeamDefender() {
 
   return (
     <div className="min-h-screen bg-slate-50 p-6">
-      <div className="max-w-7xl mx-auto space-y-6">
+      <div className={`max-w-7xl mx-auto space-y-6 ${simulationActive && successCount > 0 ? "ring-4 ring-red-500/30" : ""}`}>
         {/* Header */}
         <div className="flex items-center justify-between">
           <div className="flex items-center space-x-3">
-            <Shield className="h-8 w-8 text-blue-600" />
+            <Shield className={`h-8 w-8 text-blue-600 ${threatLevel >= 4 || isDefendersActive ? "animate-pulse-fast" : ""}`} />
             <div>
-              <h1 className="text-3xl font-bold text-gray-900">AI Blue Team Defender</h1>
-              <p className="text-gray-600">Self-Replicating AI-Powered Security Defense System</p>
+              <h1 className="text-3xl font-bold text-gray-900 dark:text-gray-100">AI Blue Team Defender</h1>
+              <p className="text-gray-600 dark:text-gray-300">Self-Replicating AI-Powered Security Defense System</p>
             </div>
           </div>
           <div className="flex items-center space-x-4">
@@ -437,10 +547,11 @@ export default function BlueTeamDefender() {
 
         {/* Main Dashboard */}
         <Tabs defaultValue="dashboard" className="space-y-6">
-          <TabsList className="grid w-full grid-cols-7">
+          <TabsList className="grid w-full grid-cols-8">
             <TabsTrigger value="dashboard">Dashboard</TabsTrigger>
             <TabsTrigger value="defenders">Defenders</TabsTrigger>
             <TabsTrigger value="threats">Threats</TabsTrigger>
+            <TabsTrigger value="oblivion">Oblivion</TabsTrigger>
             <TabsTrigger value="analysis">AI Analysis</TabsTrigger>
             <TabsTrigger value="network">Network</TabsTrigger>
             <TabsTrigger value="webapp">Web Apps</TabsTrigger>
@@ -647,7 +758,104 @@ export default function BlueTeamDefender() {
             </Card>
           </TabsContent>
 
-          <TabsContent value="analysis" className="space-y-6">
+          <TabsContent value="oblivion" className="space-y-6">
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center space-x-2">
+                  <AlertTriangle className="h-5 w-5 text-red-600" />
+                  <span>Oblivion Red Team Simulation</span>
+                </CardTitle>
+                <CardDescription>
+                  Simulate relentless red-team attacks from Oblivion AI. See if your blue team defense holds!
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-6">
+                  <Button
+                    onClick={() => simulationActive ? stopOblivionSimulation() : startOblivionSimulation()}
+                    variant={simulationActive ? "destructive" : "default"}
+                  >
+                    {simulationActive ? "Stop Simulation" : "Engage Oblivion"}
+                  </Button>
+                  <span className="text-xs text-gray-500 dark:text-gray-400">
+                    {simulationActive ? "Simulation running..." : "Idle"}
+                  </span>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+                  <Card className="bg-green-50 dark:bg-green-900/20 border-green-200 dark:border-green-700">
+                    <CardHeader>
+                      <CardTitle className="text-green-700 dark:text-green-200">Blocked Attacks</CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="text-3xl font-bold text-green-600 dark:text-green-200">{blockedCount}</div>
+                    </CardContent>
+                  </Card>
+                  <Card className="bg-red-50 dark:bg-red-900/20 border-red-200 dark:border-red-700">
+                    <CardHeader>
+                      <CardTitle className="text-red-700 dark:text-red-200">Successful Breaches</CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="text-3xl font-bold text-red-600 dark:text-red-200">{successCount}</div>
+                    </CardContent>
+                  </Card>
+                  <Card>
+                    <CardHeader>
+                      <CardTitle>Attack Intensity</CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="flex items-center gap-2">
+                        <Progress value={intensityLevel} className="h-2 flex-1" />
+                        <span className="text-sm">{intensityLevel}%</span>
+                      </div>
+                    </CardContent>
+                  </Card>
+                </div>
+                {simulationActive && successCount > 0 && !isDefendersActive && (
+                  <Alert className="border-red-300 bg-red-100 dark:bg-red-900/30 dark:border-red-700 mb-6">
+                    <AlertTriangle className="h-4 w-4 text-red-600" />
+                    <AlertTitle className="text-red-900 dark:text-red-200">Oblivion Breach Warning</AlertTitle>
+                    <AlertDescription className="text-red-800 dark:text-red-200">
+                      Some attacks are succeeding! <strong>Activate your multi-defender protocol now.</strong>
+                    </AlertDescription>
+                  </Alert>
+                )}
+                <div>
+                  <h3 className="font-semibold mb-2">Attack Feed</h3>
+                  <div className="space-y-2 max-h-96 overflow-y-auto">
+                    {attackEvents.length === 0 && (
+                      <div className="text-gray-500 dark:text-gray-400 text-sm">No attacks yet.</div>
+                    )}
+                    {attackEvents.map(event => (
+                      <div
+                        key={event.id}
+                        className={`flex items-center justify-between p-3 border rounded-lg
+                          ${event.success
+                            ? "bg-red-50 border-red-300 dark:bg-red-900/30 dark:border-red-700"
+                            : "bg-green-50 border-green-300 dark:bg-green-900/30 dark:border-green-700"}
+                        `}
+                      >
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <Badge variant={event.success ? "destructive" : "secondary"}>
+                              {event.success ? "Breach" : "Blocked"}
+                            </Badge>
+                            <span className="font-medium">{event.vector}</span>
+                          </div>
+                          <div className="text-xs text-gray-500 dark:text-gray-400">
+                            Severity: {event.severity} • {event.time}
+                          </div>
+                        </div>
+                        <span className={`text-xs font-bold ${event.success ? "text-red-600 dark:text-red-200" : "text-green-700 dark:text-green-200"}`}>
+                          {event.success ? "⚠️" : "✔️"}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+          <TabsContent value="analysis" className="space-y-6 relative">
             <Card>
               <CardHeader>
                 <CardTitle className="flex items-center space-x-2">

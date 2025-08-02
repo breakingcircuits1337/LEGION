@@ -64,7 +64,8 @@
     "vaul": "^0.9.6",
     "zod": "^3.24.1",
     "react-markdown": "^9.0.0",
-    "remark-gfm": "^4.0.0"
+    "remark-gfm": "^4.0.0",
+    "canvas-confetti": "^1.9.2"
   },
   "devDependencies": {
     "@types/node": "^22",
