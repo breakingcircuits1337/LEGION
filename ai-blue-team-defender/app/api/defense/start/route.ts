@@ -10,21 +10,39 @@ export async function POST(req: NextRequest) {
   const body = await req.json()
   const target = DEFENSE_API_BASE.replace(/\/$/, "") + "/run_with_stream"
 
-  const res = await fetch(target, {
-    method: "POST",
-    body: JSON.stringify(body),
-    headers: { "Content-Type": "application/json" },
-  })
+  const abortController = new AbortController()
+  const timeout = setTimeout(() => abortController.abort(), 10000)
+  let res: Response
+  try {
+    res = await fetch(target, {
+      method: "POST",
+      body: JSON.stringify(body),
+      headers: { "Content-Type": "application/json" },
+      signal: abortController.signal,
+    })
+  } catch (err) {
+    clearTimeout(timeout)
+    if (err instanceof Error && err.name === "AbortError") {
+      return new NextResponse("Upstream timeout", { status: 504 })
+    }
+    return new NextResponse("Upstream error", { status: 502 })
+  }
+  clearTimeout(timeout)
+  // If error, forward status/message body
+  if (res.status >= 400) {
+    const errBody = await res.text()
+    return new NextResponse(errBody, { status: res.status })
+  }
   if (!res.body) {
     return new NextResponse("No stream from defense service", { status: 502 })
   }
-  // Stream the response as text/event-stream
+  // Forward all headers
+  const headers = new Headers(res.headers)
+  headers.set("Cache-Control", "no-cache")
+  headers.set("Connection", "keep-alive")
+  headers.set("Content-Type", "text/event-stream")
   return new NextResponse(res.body, {
     status: 200,
-    headers: {
-      "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache",
-      "Connection": "keep-alive",
-    },
+    headers,
   })
 }

@@ -65,12 +65,21 @@ export default function BlueTeamDefender() {
     finalResult: string
     errors: string
     traceUrl: string | null
+    currentStep?: number | null
+    maxSteps?: number | null
+    modelActions?: string
+    modelThoughts?: string
   }>({
     html: "<h1 style='width:80vw; height:50vh'>Waiting for browser session...</h1>",
     finalResult: "",
     errors: "",
     traceUrl: null,
+    currentStep: null,
+    maxSteps: null,
+    modelActions: "",
+    modelThoughts: "",
   })
+  const [scale, setScale] = useState(1)
 
   // Keep params in sync
   // (update if provider or apiKeys change)
@@ -81,23 +90,42 @@ export default function BlueTeamDefender() {
 
   // --- Defense Agent Hook ---
   function useDefenseAgent() {
-    const eventSourceRef = useRef<EventSource | null>(null)
     const abortRef = useRef<AbortController | null>(null)
+    const lastDataTsRef = useRef<number>(0)
+    const [retryCount, setRetryCount] = useState(0)
+    const parseErrorCountRef = useRef(0)
+    const reconnectingRef = useRef(false)
+
+    // Confetti launcher
+    const launchConfetti = async () => {
+      if (typeof window !== "undefined") {
+        const confetti = (await import("canvas-confetti")).default
+        confetti({ spread: 120, origin: { y: 0.3 } })
+      }
+    }
 
     // Start defense agent (opens stream, updates state as data comes in)
-    async function start(params: any) {
+    async function start(params: any, isRetry = false) {
       setAgentRunning(true)
       setStreamData({
         html: "<h1 style='width:80vw; height:50vh'>Launching agent…</h1>",
         finalResult: "",
         errors: "",
         traceUrl: null,
+        currentStep: null,
+        maxSteps: null,
+        modelActions: "",
+        modelThoughts: "",
       })
-      toast({ title: "Defense agent launched..." })
+      toast({ title: isRetry ? "Reconnecting stream..." : "Defense agent launched..." })
       // Use fetch + eventsource-parser for streaming
       const { createParser } = await import("eventsource-parser")
       const controller = new AbortController()
       abortRef.current = controller
+      parseErrorCountRef.current = 0
+      let reconnectTimer: NodeJS.Timeout | null = null
+      let doneOnce = false
+
       try {
         const res = await fetch("/api/defense/start", {
           method: "POST",
@@ -105,31 +133,99 @@ export default function BlueTeamDefender() {
           headers: { "Content-Type": "application/json" },
           signal: controller.signal,
         })
+        if (res.status === 500) {
+          setAgentRunning(false)
+          abortRef.current = null
+          toast({ title: "Backend error", description: "DEFENSE_API_BASE env missing or invalid", variant: "destructive" })
+          setStreamData(s => ({ ...s, errors: "Backend configuration error" }))
+          return
+        } else if (res.status >= 400) {
+          setAgentRunning(false)
+          abortRef.current = null
+          const msg = await res.text()
+          toast({ title: "Upstream Error", description: msg || "Agent failed to start", variant: "destructive" })
+          setStreamData(s => ({ ...s, errors: msg || "Agent failed to start" }))
+          return
+        }
         if (!res.body) throw new Error("No response body")
         const reader = res.body.getReader()
         const decoder = new TextDecoder()
+
         let buffer = ""
         let html = ""
         let finalResult = ""
         let errors = ""
         let traceUrl: string | null = null
+        let currentStep: number | null = null
+        let maxSteps: number | null = null
+        let modelActions = ""
+        let modelThoughts = ""
+
+        // Timeout for stream stall detection:
+        function resetStallTimer() {
+          if (reconnectTimer) clearTimeout(reconnectTimer)
+          reconnectTimer = setTimeout(() => {
+            if (!reconnectingRef.current) {
+              toast({ title: "Stream stalled, attempting reconnect…", variant: "destructive" })
+              reconnectingRef.current = true
+              abortRef.current?.abort()
+              setTimeout(() => {
+                if (retryCount < 1) {
+                  setRetryCount(r => r + 1)
+                  start(params, true)
+                } else {
+                  setAgentRunning(false)
+                  setStreamData(s => ({ ...s, errors: "Stream lost. Please try again." }))
+                  abortRef.current = null
+                }
+              }, 800)
+            }
+          }, 12000)
+        }
+        resetStallTimer()
+
         const parser = createParser((event: any) => {
           if (event.type === "event" && event.data) {
+            lastDataTsRef.current = Date.now()
+            reconnectingRef.current = false
+            resetStallTimer()
             try {
               const arr = JSON.parse(event.data)
-              // The Python yields: [html_content, final_result, errors, model_actions, model_thoughts, latest_videos, trace, history_file, stop_button, run_button]
               html = arr[0] || html
               finalResult = arr[1] || ""
               errors = arr[2] || ""
+              modelActions = typeof arr[3] === "string" ? arr[3] : modelActions
+              modelThoughts = typeof arr[4] === "string" ? arr[4] : modelThoughts
               traceUrl = arr[5] || arr[6] || null
+              // Progress
+              currentStep = typeof arr[10] === "number" ? arr[10] : currentStep
+              maxSteps = typeof arr[11] === "number" ? arr[11] : maxSteps
+
               setStreamData({
                 html,
                 finalResult,
                 errors,
                 traceUrl,
+                currentStep,
+                maxSteps,
+                modelActions,
+                modelThoughts,
               })
+              // Confetti on finish with traceUrl and result
+              if (traceUrl && finalResult && !doneOnce) {
+                launchConfetti()
+                doneOnce = true
+              }
+              parseErrorCountRef.current = 0
             } catch (e) {
-              // ignore parse errors
+              parseErrorCountRef.current++
+              if (parseErrorCountRef.current > 20) {
+                setAgentRunning(false)
+                abortRef.current = null
+                setStreamData(s => ({ ...s, errors: "Stream parse error (corrupt data)" }))
+                toast({ title: "Stream error", description: "Too many parse failures", variant: "destructive" })
+                if (reconnectTimer) clearTimeout(reconnectTimer)
+              }
             }
           }
         })
@@ -141,12 +237,19 @@ export default function BlueTeamDefender() {
           parser.feed(buffer)
           buffer = ""
         }
+        if (reconnectTimer) clearTimeout(reconnectTimer)
         setAgentRunning(false)
+        abortRef.current = null
         toast({ title: "Defense completed" })
       } catch (err: any) {
         setAgentRunning(false)
+        abortRef.current = null
         setStreamData(s => ({ ...s, errors: err.message || "Stream error" }))
-        toast({ title: "Error", description: err.message, variant: "destructive" })
+        if (err?.message && err.message.includes("timeout")) {
+          toast({ title: "Timeout", description: "The defense agent service did not respond in time.", variant: "destructive" })
+        } else {
+          toast({ title: "Error", description: err.message, variant: "destructive" })
+        }
       }
     }
 
@@ -154,6 +257,8 @@ export default function BlueTeamDefender() {
     async function stop() {
       setAgentRunning(false)
       abortRef.current?.abort()
+      abortRef.current = null
+      toast({ title: "Defense agent stop requested" })
       await fetch("/api/defense/stop", { method: "POST" })
     }
 
@@ -918,10 +1023,49 @@ export default function BlueTeamDefender() {
                   </div>
                 </form>
                 <div className="mb-6">
-                  <div className="rounded border bg-background overflow-hidden" style={{ minHeight: "50vh", border: "2px solid #6366f1" }}>
+                  <div className="rounded border bg-background overflow-hidden relative" style={{ minHeight: "50vh", border: "2px solid #6366f1" }}>
                     {/* Live browser view */}
-                    <div dangerouslySetInnerHTML={{ __html: streamData.html }} />
+                    <div
+                      style={{
+                        transform: `scale(${scale})`,
+                        transformOrigin: "top left",
+                        width: scale !== 1 ? `${100 / scale}%` : undefined,
+                        minHeight: "50vh",
+                        transition: "transform 0.25s",
+                      }}
+                    >
+                      <div dangerouslySetInnerHTML={{ __html: streamData.html }} />
+                    </div>
                   </div>
+                  <div className="flex items-center gap-4 mt-2">
+                    <Label htmlFor="scale-slider" className="text-xs">Zoom</Label>
+                    <div className="flex-1 max-w-xs">
+                      <input
+                        id="scale-slider"
+                        type="range"
+                        min={0.25}
+                        max={1}
+                        step={0.01}
+                        value={scale}
+                        onChange={e => setScale(Number(e.target.value))}
+                        disabled={agentRunning && false}
+                        className="w-full accent-blue-600"
+                      />
+                    </div>
+                    <span className="text-xs text-muted-foreground">{Math.round(scale * 100)}%</span>
+                  </div>
+                  {/* Progress bar */}
+                  {streamData.currentStep && streamData.maxSteps && (
+                    <div className="flex items-center mt-3 gap-3">
+                      <Progress
+                        value={Math.round((streamData.currentStep / streamData.maxSteps) * 100)}
+                        className="flex-1 h-2"
+                      />
+                      <span className="text-xs text-muted-foreground">
+                        Step {streamData.currentStep} / {streamData.maxSteps}
+                      </span>
+                    </div>
+                  )}
                 </div>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div>
@@ -939,6 +1083,31 @@ export default function BlueTeamDefender() {
                       readOnly
                       className="bg-muted text-destructive min-h-[90px]"
                     />
+                  </div>
+                </div>
+                {/* Accordion for model actions/thoughts */}
+                <div className="mt-4">
+                  <div className="rounded-md border bg-muted">
+                    <Tabs defaultValue="actions" className="w-full">
+                      <TabsList className="w-full grid grid-cols-2">
+                        <TabsTrigger value="actions">Model Actions</TabsTrigger>
+                        <TabsTrigger value="thoughts">Model Thoughts</TabsTrigger>
+                      </TabsList>
+                      <TabsContent value="actions">
+                        <Textarea
+                          value={streamData.modelActions || ""}
+                          readOnly
+                          className="bg-background text-foreground min-h-[80px]"
+                        />
+                      </TabsContent>
+                      <TabsContent value="thoughts">
+                        <Textarea
+                          value={streamData.modelThoughts || ""}
+                          readOnly
+                          className="bg-background text-foreground min-h-[80px]"
+                        />
+                      </TabsContent>
+                    </Tabs>
                   </div>
                 </div>
                 {streamData.traceUrl && (
