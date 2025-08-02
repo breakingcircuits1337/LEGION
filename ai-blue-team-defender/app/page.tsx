@@ -19,8 +19,12 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog"
-import { Shield, AlertTriangle, Activity, Zap, Brain, Network, Globe, FileText, Key, Users, Copy } from "lucide-react"
+import { Shield, AlertTriangle, Activity, Zap, Brain, Network, Globe, FileText, Key, Users, Copy, Loader2, Sun, Moon } from "lucide-react"
 import { useChat } from "ai/react"
+import ReactMarkdown from "react-markdown"
+import remarkGfm from "remark-gfm"
+import { useToast } from "@/components/ui/toast"
+import { ThemeToggle } from "@/components/ui/theme-toggle"
 
 interface DefenderInstance {
   id: string
@@ -46,6 +50,7 @@ export default function BlueTeamDefender() {
   const [defenders, setDefenders] = useState<DefenderInstance[]>([])
   const [isDefendersActive, setIsDefendersActive] = useState(false)
   const [configOpen, setConfigOpen] = useState(false)
+  const { toast } = useToast()
 
   // Load API keys from localStorage on mount
   useEffect(() => {
@@ -118,6 +123,11 @@ export default function BlueTeamDefender() {
         })),
       )
     }, 5000)
+
+    toast({
+      title: "Multi-Defender Activated",
+      description: "Three AI defenders are now protecting your infrastructure.",
+    })
   }
 
   // Deactivate defenders
@@ -125,6 +135,10 @@ export default function BlueTeamDefender() {
     setDefenders([])
     setIsDefendersActive(false)
     setThreatLevel(2)
+    toast({
+      title: "Defenders Deactivated",
+      description: "Multi-defender protocol has been turned off.",
+    })
   }
 
   const { messages, input, handleInputChange, handleSubmit, isLoading } = useChat({
@@ -235,6 +249,7 @@ export default function BlueTeamDefender() {
             </div>
           </div>
           <div className="flex items-center space-x-4">
+            <ThemeToggle />
             <Dialog open={configOpen} onOpenChange={setConfigOpen}>
               <DialogTrigger asChild>
                 <Button variant="outline" size="sm">
@@ -668,31 +683,67 @@ export default function BlueTeamDefender() {
                         value={input}
                         onChange={handleInputChange}
                         className="min-h-[100px]"
+                        disabled={isLoading}
                       />
                     </div>
-                    <Button type="submit" disabled={isLoading} className="w-full">
+                    <Button type="submit" disabled={isLoading} className="w-full flex items-center justify-center">
+                      {isLoading && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
                       {isLoading ? "Analyzing..." : "Analyze Security Issue"}
                     </Button>
                   </form>
 
                   {messages.length > 0 && (
                     <div className="space-y-4 mt-6">
-                      <h3 className="font-semibold">AI Analysis Results:</h3>
-                      <div className="space-y-3">
-                        {messages.map((message, index) => (
-                          <div
-                            key={index}
-                            className={`p-4 rounded-lg ${
-                              message.role === "user"
-                                ? "bg-blue-50 border-l-4 border-blue-400"
-                                : "bg-gray-50 border-l-4 border-gray-400"
-                            }`}
+                  <h3 className="font-semibold">AI Analysis Results:</h3>
+                  <div className="space-y-3 max-h-96 overflow-y-auto">
+                    {isLoading && (
+                      <div className="relative">
+                        <div className="h-32 animate-pulse bg-muted rounded absolute inset-0 z-10 opacity-80" />
+                      </div>
+                    )}
+                    {messages.map((message, index) => (
+                      <div
+                        key={index}
+                        className={`p-4 rounded-lg relative group ${
+                          message.role === "user"
+                            ? "bg-blue-50 border-l-4 border-blue-400 dark:bg-blue-900/40 dark:border-blue-700"
+                            : "bg-gray-50 border-l-4 border-gray-400 dark:bg-zinc-900/40 dark:border-gray-700"
+                        }`}
+                      >
+                        <div className="font-medium text-sm mb-2 flex items-center justify-between">
+                          <span>
+                            {message.role === "user" ? "Your Query:" : "AI Analysis:"}
+                          </span>
+                          {message.role === "assistant" && (
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="opacity-70 hover:opacity-100 transition-opacity absolute top-2 right-2"
+                              onClick={() => {
+                                navigator.clipboard.writeText(message.content)
+                                toast({ title: "Copied" })
+                              }}
+                              aria-label="Copy analysis"
+                              tabIndex={0}
+                            >
+                              <Copy className="h-4 w-4" />
+                            </Button>
+                          )}
+                        </div>
+                        {message.role === "assistant" ? (
+                          <ReactMarkdown
+                            remarkPlugins={[remarkGfm]}
+                            className="prose prose-sm dark:prose-invert max-w-none"
                           >
-                            <div className="font-medium text-sm mb-2">
-                              {message.role === "user" ? "Your Query:" : "AI Analysis:"}
-                            </div>
-                            <div className="whitespace-pre-wrap">{message.content}</div>
-                          </div>
+                            {message.content}
+                          </ReactMarkdown>
+                        ) : (
+                          <div className="whitespace-pre-wrap">{message.content}</div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
                         ))}
                       </div>
                     </div>
