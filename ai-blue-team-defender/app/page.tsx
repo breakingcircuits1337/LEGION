@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect, useRef } from "react"
+import { useState, useRef } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Badge } from "@/components/ui/badge"
@@ -42,14 +42,6 @@ interface ApiKeys {
   mistral: string
 }
 
-type AttackEvent = {
-  id: number
-  vector: string
-  severity: string
-  success: boolean
-  time: string
-}
-
 export default function BlueTeamDefender() {
   const [selectedProvider, setSelectedProvider] = useState("groq")
   const [threatLevel, setThreatLevel] = useState(2)
@@ -60,107 +52,115 @@ export default function BlueTeamDefender() {
   const [configOpen, setConfigOpen] = useState(false)
   const { toast } = useToast()
 
-  // Oblivion simulation state
-  const [simulationActive, setSimulationActive] = useState(false)
-  const [attackEvents, setAttackEvents] = useState<AttackEvent[]>([])
-  const [blockedCount, setBlockedCount] = useState(0)
-  const [successCount, setSuccessCount] = useState(0)
-  const [intensityLevel, setIntensityLevel] = useState(0)
-  const simulationIntervalRef = useRef<NodeJS.Timeout | null>(null)
-  const attackIdRef = useRef(0)
-  const attackTimestampsRef = useRef<number[]>([])
+  // --- Real defense agent integration state ---
+  const [agentRunning, setAgentRunning] = useState(false)
+  const [runParams, setRunParams] = useState({
+    provider: selectedProvider,
+    apiKeys: apiKeys,
+    task: "",
+    maxSteps: 40,
+  })
+  const [streamData, setStreamData] = useState<{
+    html: string
+    finalResult: string
+    errors: string
+    traceUrl: string | null
+  }>({
+    html: "<h1 style='width:80vw; height:50vh'>Waiting for browser session...</h1>",
+    finalResult: "",
+    errors: "",
+    traceUrl: null,
+  })
 
-  // Confetti
-  const launchConfetti = async () => {
-    if (typeof window !== "undefined") {
-      const confetti = (await import("canvas-confetti")).default
-      confetti({ spread: 120, origin: { y: 0.3 } })
-    }
+  // Keep params in sync
+  // (update if provider or apiKeys change)
+  // eslint-disable-next-line
+  if (runParams.provider !== selectedProvider || runParams.apiKeys !== apiKeys) {
+    setRunParams({ ...runParams, provider: selectedProvider, apiKeys })
   }
 
-  // Calculate attack intensity as attacks per minute (scaled 0-100)
-  useEffect(() => {
-    const now = Date.now()
-    attackTimestampsRef.current = attackEvents.map(ev => {
-      // reconstruct timestamps from time string, fallback to now
-      const d = new Date()
-      const [h, m, s] = ev.time.split(":").map(Number)
-      d.setHours(h, m, s)
-      return d.getTime()
-    })
-    const windowMs = 60 * 1000
-    const cutoff = now - windowMs
-    const recent = attackTimestampsRef.current.filter(t => t > cutoff).length
-    setIntensityLevel(Math.min(100, Math.round((recent / 10) * 100)))
-  }, [attackEvents])
+  // --- Defense Agent Hook ---
+  function useDefenseAgent() {
+    const eventSourceRef = useRef<EventSource | null>(null)
+    const abortRef = useRef<AbortController | null>(null)
 
-  function startOblivionSimulation() {
-    setSimulationActive(true)
-    setAttackEvents([])
-    setBlockedCount(0)
-    setSuccessCount(0)
-    attackIdRef.current = 0
-    if (simulationIntervalRef.current) clearInterval(simulationIntervalRef.current)
-
-    simulationIntervalRef.current = setInterval(() => {
-      const vectors = [
-        "SQL Injection",
-        "Privilege Escalation",
-        "Zero-day Exploit",
-        "Phishing",
-        "Lateral Movement",
-      ]
-      const severities = ["Critical", "High", "Medium"]
-      const vector = vectors[Math.floor(Math.random() * vectors.length)]
-      const severity = severities[Math.floor(Math.random() * severities.length)]
-      const now = new Date()
-      const time = now.toLocaleTimeString("en-US", { hour12: false })
-      const success = !isDefendersActive && Math.random() < 0.3
-      const id = ++attackIdRef.current
-
-      const event: AttackEvent = { id, vector, severity, success, time }
-
-      setAttackEvents(prev => {
-        const arr = [event, ...prev]
-        return arr.length > 30 ? arr.slice(0, 30) : arr
+    // Start defense agent (opens stream, updates state as data comes in)
+    async function start(params: any) {
+      setAgentRunning(true)
+      setStreamData({
+        html: "<h1 style='width:80vw; height:50vh'>Launching agent…</h1>",
+        finalResult: "",
+        errors: "",
+        traceUrl: null,
       })
-      if (success) {
-        setSuccessCount(cnt => cnt + 1)
-      } else {
-        setBlockedCount(cnt => {
-          const next = cnt + 1
-          // Confetti for milestone blocks
-          if (next % 15 === 0 && next > 0) launchConfetti()
-          return next
+      toast({ title: "Defense agent launched..." })
+      // Use fetch + eventsource-parser for streaming
+      const { createParser } = await import("eventsource-parser")
+      const controller = new AbortController()
+      abortRef.current = controller
+      try {
+        const res = await fetch("/api/defense/start", {
+          method: "POST",
+          body: JSON.stringify(params),
+          headers: { "Content-Type": "application/json" },
+          signal: controller.signal,
         })
+        if (!res.body) throw new Error("No response body")
+        const reader = res.body.getReader()
+        const decoder = new TextDecoder()
+        let buffer = ""
+        let html = ""
+        let finalResult = ""
+        let errors = ""
+        let traceUrl: string | null = null
+        const parser = createParser((event: any) => {
+          if (event.type === "event" && event.data) {
+            try {
+              const arr = JSON.parse(event.data)
+              // The Python yields: [html_content, final_result, errors, model_actions, model_thoughts, latest_videos, trace, history_file, stop_button, run_button]
+              html = arr[0] || html
+              finalResult = arr[1] || ""
+              errors = arr[2] || ""
+              traceUrl = arr[5] || arr[6] || null
+              setStreamData({
+                html,
+                finalResult,
+                errors,
+                traceUrl,
+              })
+            } catch (e) {
+              // ignore parse errors
+            }
+          }
+        })
+        // Read stream and feed parser
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          buffer += decoder.decode(value, { stream: true })
+          parser.feed(buffer)
+          buffer = ""
+        }
+        setAgentRunning(false)
+        toast({ title: "Defense completed" })
+      } catch (err: any) {
+        setAgentRunning(false)
+        setStreamData(s => ({ ...s, errors: err.message || "Stream error" }))
+        toast({ title: "Error", description: err.message, variant: "destructive" })
       }
+    }
 
-      // Toast on critical or successful attack
-      if (severity === "Critical" || success) {
-        toast({
-          title: "Oblivion breach attempt",
-          description: `${vector} (${severity})`,
-          variant: success ? "destructive" : "default",
-        })
-      }
-    }, 2500)
+    // Stop defense agent
+    async function stop() {
+      setAgentRunning(false)
+      abortRef.current?.abort()
+      await fetch("/api/defense/stop", { method: "POST" })
+    }
+
+    return { start, stop }
   }
 
-  // Stop simulation & cleanup
-  function stopOblivionSimulation() {
-    setSimulationActive(false)
-    if (simulationIntervalRef.current) {
-      clearInterval(simulationIntervalRef.current)
-      simulationIntervalRef.current = null
-    }
-  }
-
-  // Cleanup interval on unmount
-  useEffect(() => {
-    return () => {
-      if (simulationIntervalRef.current) clearInterval(simulationIntervalRef.current)
-    }
-  }, [])
+  const defenseAgent = useDefenseAgent()
 
   // Load API keys from localStorage on mount
   useEffect(() => {
@@ -547,12 +547,11 @@ export default function BlueTeamDefender() {
 
         {/* Main Dashboard */}
         <Tabs defaultValue="dashboard" className="space-y-6">
-          <TabsList className="grid w-full grid-cols-8">
+          <TabsList className="grid w-full grid-cols-7">
             <TabsTrigger value="dashboard">Dashboard</TabsTrigger>
             <TabsTrigger value="defenders">Defenders</TabsTrigger>
             <TabsTrigger value="threats">Threats</TabsTrigger>
-            <TabsTrigger value="oblivion">Oblivion</TabsTrigger>
-            <TabsTrigger value="analysis">AI Analysis</TabsTrigger>
+            <TabsTrigger value="analysis">Active Defense</TabsTrigger>
             <TabsTrigger value="network">Network</TabsTrigger>
             <TabsTrigger value="webapp">Web Apps</TabsTrigger>
             <TabsTrigger value="reports">Reports</TabsTrigger>
@@ -856,6 +855,102 @@ export default function BlueTeamDefender() {
             </Card>
           </TabsContent>
           <TabsContent value="analysis" className="space-y-6 relative">
+            <Card className="relative">
+              <CardHeader>
+                <CardTitle className="flex items-center space-x-2">
+                  <Brain className="h-5 w-5" />
+                  <span>Active Defense Control Panel</span>
+                </CardTitle>
+                <CardDescription>
+                  Launch and control a real browser-based defense agent against live attackers.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <form
+                  className="grid grid-cols-1 md:grid-cols-2 gap-6 items-end mb-6"
+                  onSubmit={e => {
+                    e.preventDefault()
+                    if (!agentRunning) defenseAgent.start(runParams)
+                  }}
+                >
+                  <div className="space-y-4">
+                    <Label htmlFor="defense-task">Defense Task</Label>
+                    <Textarea
+                      id="defense-task"
+                      value={runParams.task}
+                      placeholder="Describe the blue team defense task or scenario…"
+                      onChange={e => setRunParams({ ...runParams, task: e.target.value })}
+                      disabled={agentRunning}
+                    />
+                    <div className="flex gap-4 items-center">
+                      <Label htmlFor="maxSteps">Max Steps</Label>
+                      <input
+                        id="maxSteps"
+                        type="number"
+                        min={1}
+                        max={200}
+                        step={1}
+                        className="border rounded px-2 py-1 w-24 bg-background text-foreground"
+                        value={runParams.maxSteps}
+                        onChange={e => setRunParams({ ...runParams, maxSteps: Number(e.target.value) })}
+                        disabled={agentRunning}
+                      />
+                    </div>
+                  </div>
+                  <div className="flex gap-4 items-center h-full">
+                    <Button
+                      type="submit"
+                      disabled={agentRunning}
+                      className="w-32"
+                      variant="default"
+                    >
+                      {agentRunning ? "Running..." : "Start"}
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="destructive"
+                      disabled={!agentRunning}
+                      onClick={() => defenseAgent.stop()}
+                      className="w-32"
+                    >
+                      Stop
+                    </Button>
+                  </div>
+                </form>
+                <div className="mb-6">
+                  <div className="rounded border bg-background overflow-hidden" style={{ minHeight: "50vh", border: "2px solid #6366f1" }}>
+                    {/* Live browser view */}
+                    <div dangerouslySetInnerHTML={{ __html: streamData.html }} />
+                  </div>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <Label>Final Result</Label>
+                    <Textarea
+                      value={streamData.finalResult}
+                      readOnly
+                      className="bg-muted text-foreground min-h-[90px]"
+                    />
+                  </div>
+                  <div>
+                    <Label>Errors</Label>
+                    <Textarea
+                      value={streamData.errors}
+                      readOnly
+                      className="bg-muted text-destructive min-h-[90px]"
+                    />
+                  </div>
+                </div>
+                {streamData.traceUrl && (
+                  <div className="mt-4">
+                    <a href={streamData.traceUrl} download className="underline text-blue-600 dark:text-blue-400">
+                      Download Trace
+                    </a>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </TabsContent>
             <Card>
               <CardHeader>
                 <CardTitle className="flex items-center space-x-2">
