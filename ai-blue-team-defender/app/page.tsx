@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useRef } from "react"
+import Slider from "@/components/ui/slider"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Badge } from "@/components/ui/badge"
@@ -95,6 +96,7 @@ export default function BlueTeamDefender() {
     const [retryCount, setRetryCount] = useState(0)
     const parseErrorCountRef = useRef(0)
     const reconnectingRef = useRef(false)
+    const wsRef = useRef<WebSocket | null>(null)
 
     // Confetti launcher
     const launchConfetti = async () => {
@@ -118,13 +120,135 @@ export default function BlueTeamDefender() {
         modelThoughts: "",
       })
       toast({ title: isRetry ? "Reconnecting stream..." : "Defense agent launched..." })
-      // Use fetch + eventsource-parser for streaming
+
+      // WebSocket support if env present and not already retrying SSE
+      const wsEndpoint = typeof window !== "undefined" ? process.env.NEXT_PUBLIC_DEFENSE_WS : undefined
+      let wsTried = false
+      let finished = false
+
+      // Helper: parse array and update state
+      function handleArray(arr: any[], doneOnce: { current: boolean }) {
+        try {
+          let html = arr[0] || ""
+          let finalResult = arr[1] || ""
+          let errors = arr[2] || ""
+          let modelActions = typeof arr[3] === "string" ? arr[3] : ""
+          let modelThoughts = typeof arr[4] === "string" ? arr[4] : ""
+          let traceUrl = arr[5] || arr[6] || null
+          let currentStep: number | null = typeof arr[10] === "number" ? arr[10] : null
+          let maxSteps: number | null = typeof arr[11] === "number" ? arr[11] : null
+          setStreamData(prev => ({
+            ...prev,
+            html: html || prev.html,
+            finalResult: finalResult || prev.finalResult,
+            errors: errors || prev.errors,
+            traceUrl: traceUrl || prev.traceUrl,
+            currentStep,
+            maxSteps,
+            modelActions: modelActions || prev.modelActions,
+            modelThoughts: modelThoughts || prev.modelThoughts,
+          }))
+          if (traceUrl && finalResult && !doneOnce.current) {
+            launchConfetti()
+            doneOnce.current = true
+          }
+          parseErrorCountRef.current = 0
+        } catch {
+          parseErrorCountRef.current++
+        }
+      }
+
+      // Try WebSocket first if possible
+      if (wsEndpoint && !isRetry) {
+        try {
+          wsTried = true
+          // Use isomorphic-ws for type safety
+          const WS = (await import("isomorphic-ws")).default
+          const ws = new WS(wsEndpoint) as WebSocket
+          wsRef.current = ws
+          let reconnectTimer: NodeJS.Timeout | null = null
+          let doneOnce = { current: false }
+          ws.onopen = () => {
+            ws.send(JSON.stringify(params))
+            resetStallTimer()
+          }
+          ws.onmessage = (event: MessageEvent) => {
+            lastDataTsRef.current = Date.now()
+            reconnectingRef.current = false
+            resetStallTimer()
+            try {
+              const arr = JSON.parse(typeof event.data === "string" ? event.data : "")
+              handleArray(arr, doneOnce)
+            } catch {
+              parseErrorCountRef.current++
+              if (parseErrorCountRef.current > 20) {
+                ws.close()
+                setAgentRunning(false)
+                setStreamData(s => ({ ...s, errors: "WebSocket parse error (corrupt data)" }))
+                toast({ title: "Stream error", description: "Too many parse failures", variant: "destructive" })
+                if (reconnectTimer) clearTimeout(reconnectTimer)
+              }
+            }
+          }
+          ws.onerror = () => {
+            // fallback to SSE
+            if (!finished) {
+              ws.close()
+              nextSSE()
+            }
+          }
+          ws.onclose = () => {
+            if (!finished) {
+              nextSSE()
+            }
+          }
+          // Timeout for stream stall detection:
+          function resetStallTimer() {
+            if (reconnectTimer) clearTimeout(reconnectTimer)
+            reconnectTimer = setTimeout(() => {
+              if (!reconnectingRef.current) {
+                toast({ title: "Stream stalled, attempting reconnect…", variant: "destructive" })
+                reconnectingRef.current = true
+                ws.close()
+                setTimeout(() => {
+                  if (retryCount < 1) {
+                    setRetryCount(r => r + 1)
+                    start(params, true)
+                  } else {
+                    setAgentRunning(false)
+                    setStreamData(s => ({ ...s, errors: "Stream lost. Please try again." }))
+                  }
+                }, 800)
+              }
+            }, 12000)
+          }
+          ws.onclose = ws.onerror = () => {
+            if (!finished) {
+              if (reconnectTimer) clearTimeout(reconnectTimer)
+              nextSSE()
+            }
+          }
+          // Helper for fallback
+          function nextSSE() {
+            finished = true
+            wsRef.current = null
+            start(params, true)
+          }
+          return
+        } catch {
+          // fallback to SSE
+          start(params, true)
+          return
+        }
+      }
+
+      // Else (or as fallback): Use fetch + eventsource-parser for streaming SSE
       const { createParser } = await import("eventsource-parser")
       const controller = new AbortController()
       abortRef.current = controller
       parseErrorCountRef.current = 0
       let reconnectTimer: NodeJS.Timeout | null = null
-      let doneOnce = false
+      let doneOnce = { current: false }
 
       try {
         const res = await fetch("/api/defense/start", {
@@ -150,16 +274,6 @@ export default function BlueTeamDefender() {
         if (!res.body) throw new Error("No response body")
         const reader = res.body.getReader()
         const decoder = new TextDecoder()
-
-        let buffer = ""
-        let html = ""
-        let finalResult = ""
-        let errors = ""
-        let traceUrl: string | null = null
-        let currentStep: number | null = null
-        let maxSteps: number | null = null
-        let modelActions = ""
-        let modelThoughts = ""
 
         // Timeout for stream stall detection:
         function resetStallTimer() {
@@ -191,33 +305,9 @@ export default function BlueTeamDefender() {
             resetStallTimer()
             try {
               const arr = JSON.parse(event.data)
-              html = arr[0] || html
-              finalResult = arr[1] || ""
-              errors = arr[2] || ""
-              modelActions = typeof arr[3] === "string" ? arr[3] : modelActions
-              modelThoughts = typeof arr[4] === "string" ? arr[4] : modelThoughts
-              traceUrl = arr[5] || arr[6] || null
-              // Progress
-              currentStep = typeof arr[10] === "number" ? arr[10] : currentStep
-              maxSteps = typeof arr[11] === "number" ? arr[11] : maxSteps
-
-              setStreamData({
-                html,
-                finalResult,
-                errors,
-                traceUrl,
-                currentStep,
-                maxSteps,
-                modelActions,
-                modelThoughts,
-              })
-              // Confetti on finish with traceUrl and result
-              if (traceUrl && finalResult && !doneOnce) {
-                launchConfetti()
-                doneOnce = true
-              }
+              handleArray(arr, doneOnce)
               parseErrorCountRef.current = 0
-            } catch (e) {
+            } catch {
               parseErrorCountRef.current++
               if (parseErrorCountRef.current > 20) {
                 setAgentRunning(false)
@@ -233,9 +323,7 @@ export default function BlueTeamDefender() {
         while (true) {
           const { done, value } = await reader.read()
           if (done) break
-          buffer += decoder.decode(value, { stream: true })
-          parser.feed(buffer)
-          buffer = ""
+          parser.feed(decoder.decode(value, { stream: true }))
         }
         if (reconnectTimer) clearTimeout(reconnectTimer)
         setAgentRunning(false)
@@ -258,6 +346,10 @@ export default function BlueTeamDefender() {
       setAgentRunning(false)
       abortRef.current?.abort()
       abortRef.current = null
+      if (wsRef.current) {
+        wsRef.current.close()
+        wsRef.current = null
+      }
       toast({ title: "Defense agent stop requested" })
       await fetch("/api/defense/stop", { method: "POST" })
     }
@@ -1016,7 +1108,7 @@ export default function BlueTeamDefender() {
                       variant="destructive"
                       disabled={!agentRunning}
                       onClick={() => defenseAgent.stop()}
-                      className="w-32"
+                      className={`w-32 ${agentRunning ? "animate-pulse-fast" : ""}`}
                     >
                       Stop
                     </Button>
@@ -1040,16 +1132,15 @@ export default function BlueTeamDefender() {
                   <div className="flex items-center gap-4 mt-2">
                     <Label htmlFor="scale-slider" className="text-xs">Zoom</Label>
                     <div className="flex-1 max-w-xs">
-                      <input
+                      <Slider
                         id="scale-slider"
-                        type="range"
                         min={0.25}
                         max={1}
                         step={0.01}
-                        value={scale}
-                        onChange={e => setScale(Number(e.target.value))}
-                        disabled={agentRunning && false}
-                        className="w-full accent-blue-600"
+                        value={[scale]}
+                        onValueChange={v => setScale(v[0])}
+                        disabled={!agentRunning}
+                        className="w-full"
                       />
                     </div>
                     <span className="text-xs text-muted-foreground">{Math.round(scale * 100)}%</span>
@@ -1059,7 +1150,13 @@ export default function BlueTeamDefender() {
                     <div className="flex items-center mt-3 gap-3">
                       <Progress
                         value={Math.round((streamData.currentStep / streamData.maxSteps) * 100)}
-                        className="flex-1 h-2"
+                        className={`flex-1 h-2
+                          ${((streamData.currentStep / streamData.maxSteps) * 100) > 80
+                            ? "bg-green-500"
+                            : ((streamData.currentStep / streamData.maxSteps) * 100) > 50
+                              ? "bg-yellow-500"
+                              : "bg-blue-500"
+                          }`}
                       />
                       <span className="text-xs text-muted-foreground">
                         Step {streamData.currentStep} / {streamData.maxSteps}
