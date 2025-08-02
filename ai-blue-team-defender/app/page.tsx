@@ -1,0 +1,897 @@
+"use client"
+
+import { useState, useEffect } from "react"
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Textarea } from "@/components/ui/textarea"
+import { Label } from "@/components/ui/label"
+import { Input } from "@/components/ui/input"
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
+import { Progress } from "@/components/ui/progress"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog"
+import { Shield, AlertTriangle, Activity, Zap, Brain, Network, Globe, FileText, Key, Users, Copy } from "lucide-react"
+import { useChat } from "ai/react"
+
+interface DefenderInstance {
+  id: string
+  name: string
+  specialization: string
+  status: "active" | "analyzing" | "responding"
+  provider: string
+  threatLevel: number
+  lastAction: string
+}
+
+interface ApiKeys {
+  groq: string
+  gemini: string
+  mistral: string
+}
+
+export default function BlueTeamDefender() {
+  const [selectedProvider, setSelectedProvider] = useState("groq")
+  const [threatLevel, setThreatLevel] = useState(2)
+  const [activeIncidents, setActiveIncidents] = useState(3)
+  const [apiKeys, setApiKeys] = useState<ApiKeys>({ groq: "", gemini: "", mistral: "" })
+  const [defenders, setDefenders] = useState<DefenderInstance[]>([])
+  const [isDefendersActive, setIsDefendersActive] = useState(false)
+  const [configOpen, setConfigOpen] = useState(false)
+
+  // Load API keys from localStorage on mount
+  useEffect(() => {
+    const savedKeys = localStorage.getItem("ai-defender-keys")
+    if (savedKeys) {
+      setApiKeys(JSON.parse(savedKeys))
+    }
+  }, [])
+
+  // Save API keys to localStorage
+  const saveApiKeys = () => {
+    localStorage.setItem("ai-defender-keys", JSON.stringify(apiKeys))
+    setConfigOpen(false)
+  }
+
+  // Spawn multiple AI defenders when high threat detected
+  const spawnDefenders = () => {
+    const newDefenders: DefenderInstance[] = [
+      {
+        id: "defender-1",
+        name: "Network Guardian",
+        specialization: "Network Security & Traffic Analysis",
+        status: "active",
+        provider: "groq",
+        threatLevel: 4,
+        lastAction: "Analyzing network traffic patterns",
+      },
+      {
+        id: "defender-2",
+        name: "Web Shield",
+        specialization: "Web Application Protection",
+        status: "active",
+        provider: "gemini",
+        threatLevel: 4,
+        lastAction: "Scanning for injection attacks",
+      },
+      {
+        id: "defender-3",
+        name: "Incident Responder",
+        specialization: "Threat Intelligence & Response",
+        status: "active",
+        provider: "mistral",
+        threatLevel: 4,
+        lastAction: "Correlating threat indicators",
+      },
+    ]
+
+    setDefenders(newDefenders)
+    setIsDefendersActive(true)
+    setThreatLevel(4)
+    setActiveIncidents((prev) => prev + 1)
+
+    // Simulate defender activities
+    setTimeout(() => {
+      setDefenders((prev) =>
+        prev.map((d) => ({
+          ...d,
+          status: "analyzing" as const,
+          lastAction: `${d.name} analyzing threat vectors...`,
+        })),
+      )
+    }, 2000)
+
+    setTimeout(() => {
+      setDefenders((prev) =>
+        prev.map((d) => ({
+          ...d,
+          status: "responding" as const,
+          lastAction: `${d.name} implementing countermeasures...`,
+        })),
+      )
+    }, 5000)
+  }
+
+  // Deactivate defenders
+  const deactivateDefenders = () => {
+    setDefenders([])
+    setIsDefendersActive(false)
+    setThreatLevel(2)
+  }
+
+  const { messages, input, handleInputChange, handleSubmit, isLoading } = useChat({
+    api: "/api/security-analysis",
+    body: {
+      provider: selectedProvider,
+      apiKeys: apiKeys,
+    },
+  })
+
+  const securityMetrics = [
+    { name: "Network Security", value: isDefendersActive ? 95 : 85, status: isDefendersActive ? "excellent" : "good" },
+    { name: "Web App Security", value: isDefendersActive ? 88 : 72, status: isDefendersActive ? "good" : "warning" },
+    { name: "Endpoint Protection", value: isDefendersActive ? 97 : 91, status: "good" },
+    { name: "Data Integrity", value: isDefendersActive ? 94 : 88, status: "good" },
+  ]
+
+  const recentThreats = [
+    {
+      id: 1,
+      type: "Advanced Persistent Threat",
+      severity: "Critical",
+      source: "192.168.1.45",
+      time: "1 min ago",
+      status: isDefendersActive ? "neutralized" : "active",
+    },
+    {
+      id: 2,
+      type: "SQL Injection Attempt",
+      severity: "High",
+      source: "10.0.0.23",
+      time: "3 min ago",
+      status: "blocked",
+    },
+    {
+      id: 3,
+      type: "Port Scan",
+      severity: "Medium",
+      source: "172.16.0.12",
+      time: "8 min ago",
+      status: "monitored",
+    },
+  ]
+
+  const getSeverityColor = (severity: string) => {
+    switch (severity.toLowerCase()) {
+      case "critical":
+        return "destructive"
+      case "high":
+        return "destructive"
+      case "medium":
+        return "default"
+      case "low":
+        return "secondary"
+      default:
+        return "default"
+    }
+  }
+
+  const getStatusColor = (status: string) => {
+    switch (status.toLowerCase()) {
+      case "neutralized":
+        return "secondary"
+      case "blocked":
+        return "destructive"
+      case "active":
+        return "destructive"
+      case "investigating":
+        return "default"
+      case "monitored":
+        return "secondary"
+      default:
+        return "default"
+    }
+  }
+
+  const getDefenderStatusColor = (status: string) => {
+    switch (status) {
+      case "active":
+        return "bg-green-100 text-green-800"
+      case "analyzing":
+        return "bg-yellow-100 text-yellow-800"
+      case "responding":
+        return "bg-red-100 text-red-800"
+      default:
+        return "bg-gray-100 text-gray-800"
+    }
+  }
+
+  return (
+    <div className="min-h-screen bg-slate-50 p-6">
+      <div className="max-w-7xl mx-auto space-y-6">
+        {/* Header */}
+        <div className="flex items-center justify-between">
+          <div className="flex items-center space-x-3">
+            <Shield className="h-8 w-8 text-blue-600" />
+            <div>
+              <h1 className="text-3xl font-bold text-gray-900">AI Blue Team Defender</h1>
+              <p className="text-gray-600">Self-Replicating AI-Powered Security Defense System</p>
+            </div>
+          </div>
+          <div className="flex items-center space-x-4">
+            <Dialog open={configOpen} onOpenChange={setConfigOpen}>
+              <DialogTrigger asChild>
+                <Button variant="outline" size="sm">
+                  <Key className="h-4 w-4 mr-2" />
+                  Configure APIs
+                </Button>
+              </DialogTrigger>
+              <DialogContent className="sm:max-w-md">
+                <DialogHeader>
+                  <DialogTitle>API Configuration</DialogTitle>
+                  <DialogDescription>
+                    Enter your API keys for all AI providers to enable full functionality.
+                  </DialogDescription>
+                </DialogHeader>
+                <div className="space-y-4">
+                  <div>
+                    <Label htmlFor="groq-key">Groq API Key</Label>
+                    <Input
+                      id="groq-key"
+                      type="password"
+                      placeholder="Enter Groq API key..."
+                      value={apiKeys.groq}
+                      onChange={(e) => setApiKeys((prev) => ({ ...prev, groq: e.target.value }))}
+                    />
+                  </div>
+                  <div>
+                    <Label htmlFor="gemini-key">Google Gemini API Key</Label>
+                    <Input
+                      id="gemini-key"
+                      type="password"
+                      placeholder="Enter Gemini API key..."
+                      value={apiKeys.gemini}
+                      onChange={(e) => setApiKeys((prev) => ({ ...prev, gemini: e.target.value }))}
+                    />
+                  </div>
+                  <div>
+                    <Label htmlFor="mistral-key">Mistral API Key</Label>
+                    <Input
+                      id="mistral-key"
+                      type="password"
+                      placeholder="Enter Mistral API key..."
+                      value={apiKeys.mistral}
+                      onChange={(e) => setApiKeys((prev) => ({ ...prev, mistral: e.target.value }))}
+                    />
+                  </div>
+                  <Button onClick={saveApiKeys} className="w-full">
+                    Save Configuration
+                  </Button>
+                </div>
+              </DialogContent>
+            </Dialog>
+
+            <Select value={selectedProvider} onValueChange={setSelectedProvider}>
+              <SelectTrigger className="w-40">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="groq">Groq (Fast)</SelectItem>
+                <SelectItem value="gemini">Google Gemini</SelectItem>
+                <SelectItem value="mistral">Mistral AI</SelectItem>
+              </SelectContent>
+            </Select>
+            <Badge variant={threatLevel > 3 ? "destructive" : threatLevel > 1 ? "default" : "secondary"}>
+              Threat Level: {threatLevel}/5
+            </Badge>
+            {isDefendersActive && (
+              <Badge variant="secondary" className="bg-green-100 text-green-800">
+                <Users className="h-3 w-3 mr-1" />3 Defenders Active
+              </Badge>
+            )}
+          </div>
+        </div>
+
+        {/* Threat Detection Alert */}
+        {!isDefendersActive && (
+          <Alert className="border-red-200 bg-red-50">
+            <AlertTriangle className="h-4 w-4 text-red-600" />
+            <AlertTitle className="text-red-800">Critical Threat Detected</AlertTitle>
+            <AlertDescription className="text-red-700">
+              Advanced Persistent Threat identified. Recommend activating multi-defender protocol.
+              <Button onClick={spawnDefenders} className="ml-4 bg-red-600 hover:bg-red-700" size="sm">
+                <Copy className="h-4 w-4 mr-2" />
+                Spawn Defenders
+              </Button>
+            </AlertDescription>
+          </Alert>
+        )}
+
+        {/* Active Defenders Display */}
+        {isDefendersActive && (
+          <Card className="border-green-200 bg-green-50">
+            <CardHeader>
+              <CardTitle className="flex items-center text-green-800">
+                <Users className="h-5 w-5 mr-2" />
+                Multi-Defender Protocol Active
+              </CardTitle>
+              <CardDescription className="text-green-700">
+                Three specialized AI defenders are now protecting your infrastructure
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                {defenders.map((defender) => (
+                  <div key={defender.id} className="bg-white p-4 rounded-lg border">
+                    <div className="flex items-center justify-between mb-2">
+                      <h3 className="font-semibold">{defender.name}</h3>
+                      <Badge className={getDefenderStatusColor(defender.status)}>{defender.status}</Badge>
+                    </div>
+                    <p className="text-sm text-gray-600 mb-2">{defender.specialization}</p>
+                    <p className="text-xs text-gray-500 mb-2">Provider: {defender.provider}</p>
+                    <p className="text-xs font-medium">{defender.lastAction}</p>
+                    <div className="mt-2">
+                      <div className="flex justify-between text-xs mb-1">
+                        <span>Activity Level</span>
+                        <span>{defender.threatLevel * 25}%</span>
+                      </div>
+                      <Progress value={defender.threatLevel * 25} className="h-1" />
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div className="mt-4 flex justify-end">
+                <Button onClick={deactivateDefenders} variant="outline" size="sm">
+                  Deactivate Defenders
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
+        {/* Security Overview Cards */}
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+          <Card>
+            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+              <CardTitle className="text-sm font-medium">Active Threats</CardTitle>
+              <AlertTriangle className="h-4 w-4 text-red-500" />
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-bold text-red-600">{activeIncidents}</div>
+              <p className="text-xs text-muted-foreground">
+                {isDefendersActive ? "Under AI control" : "+2 from last hour"}
+              </p>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+              <CardTitle className="text-sm font-medium">Network Status</CardTitle>
+              <Activity className="h-4 w-4 text-green-500" />
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-bold text-green-600">{isDefendersActive ? "Fortified" : "Secure"}</div>
+              <p className="text-xs text-muted-foreground">
+                {isDefendersActive ? "Multi-layer protection" : "All systems operational"}
+              </p>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+              <CardTitle className="text-sm font-medium">AI Defenders</CardTitle>
+              <Brain className="h-4 w-4 text-purple-500" />
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-bold text-purple-600">{defenders.length}</div>
+              <p className="text-xs text-muted-foreground">
+                {isDefendersActive ? "Active instances" : "Ready to deploy"}
+              </p>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+              <CardTitle className="text-sm font-medium">Response Time</CardTitle>
+              <Zap className="h-4 w-4 text-yellow-500" />
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-bold text-yellow-600">{isDefendersActive ? "0.3s" : "1.2s"}</div>
+              <p className="text-xs text-muted-foreground">
+                {isDefendersActive ? "Multi-AI boost" : "Average response"}
+              </p>
+            </CardContent>
+          </Card>
+        </div>
+
+        {/* Main Dashboard */}
+        <Tabs defaultValue="dashboard" className="space-y-6">
+          <TabsList className="grid w-full grid-cols-7">
+            <TabsTrigger value="dashboard">Dashboard</TabsTrigger>
+            <TabsTrigger value="defenders">Defenders</TabsTrigger>
+            <TabsTrigger value="threats">Threats</TabsTrigger>
+            <TabsTrigger value="analysis">AI Analysis</TabsTrigger>
+            <TabsTrigger value="network">Network</TabsTrigger>
+            <TabsTrigger value="webapp">Web Apps</TabsTrigger>
+            <TabsTrigger value="reports">Reports</TabsTrigger>
+          </TabsList>
+
+          <TabsContent value="dashboard" className="space-y-6">
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              {/* Security Metrics */}
+              <Card>
+                <CardHeader>
+                  <CardTitle>Security Posture</CardTitle>
+                  <CardDescription>
+                    {isDefendersActive
+                      ? "Enhanced by multi-defender protocol"
+                      : "Current security metrics across all systems"}
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  {securityMetrics.map((metric, index) => (
+                    <div key={index} className="space-y-2">
+                      <div className="flex justify-between text-sm">
+                        <span>{metric.name}</span>
+                        <span className="font-medium">{metric.value}%</span>
+                      </div>
+                      <Progress
+                        value={metric.value}
+                        className={`h-2 ${metric.status === "warning" ? "bg-yellow-100" : "bg-green-100"}`}
+                      />
+                    </div>
+                  ))}
+                </CardContent>
+              </Card>
+
+              {/* Recent Threats */}
+              <Card>
+                <CardHeader>
+                  <CardTitle>Recent Threats</CardTitle>
+                  <CardDescription>Latest security events detected</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <div className="space-y-3">
+                    {recentThreats.map((threat) => (
+                      <div key={threat.id} className="flex items-center justify-between p-3 border rounded-lg">
+                        <div className="space-y-1">
+                          <div className="flex items-center space-x-2">
+                            <Badge variant={getSeverityColor(threat.severity)}>{threat.severity}</Badge>
+                            <span className="font-medium">{threat.type}</span>
+                          </div>
+                          <div className="text-sm text-gray-600">
+                            Source: {threat.source} • {threat.time}
+                          </div>
+                        </div>
+                        <Badge variant={getStatusColor(threat.status)}>{threat.status}</Badge>
+                      </div>
+                    ))}
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
+          </TabsContent>
+
+          <TabsContent value="defenders" className="space-y-6">
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center space-x-2">
+                  <Users className="h-5 w-5" />
+                  <span>AI Defender Management</span>
+                </CardTitle>
+                <CardDescription>Deploy and manage multiple AI defenders for enhanced security</CardDescription>
+              </CardHeader>
+              <CardContent>
+                {!isDefendersActive ? (
+                  <div className="text-center py-8">
+                    <Users className="h-16 w-16 mx-auto text-gray-400 mb-4" />
+                    <h3 className="text-lg font-semibold mb-2">No Active Defenders</h3>
+                    <p className="text-gray-600 mb-4">Deploy multiple AI defenders to enhance your security posture</p>
+                    <Button onClick={spawnDefenders} className="bg-blue-600 hover:bg-blue-700">
+                      <Copy className="h-4 w-4 mr-2" />
+                      Deploy Multi-Defender Protocol
+                    </Button>
+                  </div>
+                ) : (
+                  <div className="space-y-6">
+                    <div className="flex items-center justify-between">
+                      <h3 className="text-lg font-semibold">Active Defenders</h3>
+                      <Badge variant="secondary" className="bg-green-100 text-green-800">
+                        {defenders.length} Active
+                      </Badge>
+                    </div>
+
+                    <div className="grid grid-cols-1 gap-4">
+                      {defenders.map((defender) => (
+                        <Card key={defender.id} className="border-l-4 border-l-blue-500">
+                          <CardContent className="p-4">
+                            <div className="flex items-center justify-between mb-3">
+                              <div className="flex items-center space-x-3">
+                                <Brain className="h-8 w-8 text-blue-600" />
+                                <div>
+                                  <h4 className="font-semibold">{defender.name}</h4>
+                                  <p className="text-sm text-gray-600">{defender.specialization}</p>
+                                </div>
+                              </div>
+                              <Badge className={getDefenderStatusColor(defender.status)}>{defender.status}</Badge>
+                            </div>
+
+                            <div className="grid grid-cols-2 gap-4 text-sm">
+                              <div>
+                                <span className="text-gray-500">Provider:</span>
+                                <span className="ml-2 font-medium">{defender.provider}</span>
+                              </div>
+                              <div>
+                                <span className="text-gray-500">Threat Level:</span>
+                                <span className="ml-2 font-medium">{defender.threatLevel}/5</span>
+                              </div>
+                            </div>
+
+                            <div className="mt-3">
+                              <p className="text-sm font-medium text-gray-700">Last Action:</p>
+                              <p className="text-sm text-gray-600">{defender.lastAction}</p>
+                            </div>
+
+                            <div className="mt-3">
+                              <div className="flex justify-between text-xs mb-1">
+                                <span>Activity Level</span>
+                                <span>{defender.threatLevel * 25}%</span>
+                              </div>
+                              <Progress value={defender.threatLevel * 25} className="h-2" />
+                            </div>
+                          </CardContent>
+                        </Card>
+                      ))}
+                    </div>
+
+                    <div className="flex justify-center">
+                      <Button
+                        onClick={deactivateDefenders}
+                        variant="outline"
+                        className="border-red-200 text-red-600 hover:bg-red-50 bg-transparent"
+                      >
+                        Deactivate All Defenders
+                      </Button>
+                    </div>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          <TabsContent value="threats" className="space-y-6">
+            <Card>
+              <CardHeader>
+                <CardTitle>Threat Intelligence</CardTitle>
+                <CardDescription>
+                  {isDefendersActive
+                    ? "Multi-AI enhanced threat monitoring"
+                    : "Real-time threat monitoring and analysis"}
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <Alert className={isDefendersActive ? "border-green-200 bg-green-50" : ""}>
+                  <AlertTriangle className="h-4 w-4" />
+                  <AlertTitle>{isDefendersActive ? "Enhanced Protection Active" : "Active Monitoring"}</AlertTitle>
+                  <AlertDescription>
+                    {isDefendersActive
+                      ? "Three specialized AI defenders are actively protecting your network with coordinated threat response."
+                      : "AI-powered threat detection is actively monitoring your network for suspicious activities."}
+                  </AlertDescription>
+                </Alert>
+                <div className="mt-6 space-y-4">
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <Card>
+                      <CardHeader className="pb-3">
+                        <CardTitle className="text-lg">Blocked Attacks</CardTitle>
+                      </CardHeader>
+                      <CardContent>
+                        <div className="text-3xl font-bold text-red-600">{isDefendersActive ? "203" : "127"}</div>
+                        <p className="text-sm text-gray-600">Last 24 hours</p>
+                      </CardContent>
+                    </Card>
+                    <Card>
+                      <CardHeader className="pb-3">
+                        <CardTitle className="text-lg">Response Time</CardTitle>
+                      </CardHeader>
+                      <CardContent>
+                        <div className="text-3xl font-bold text-green-600">{isDefendersActive ? "0.3s" : "1.2s"}</div>
+                        <p className="text-sm text-gray-600">Average detection</p>
+                      </CardContent>
+                    </Card>
+                    <Card>
+                      <CardHeader className="pb-3">
+                        <CardTitle className="text-lg">AI Accuracy</CardTitle>
+                      </CardHeader>
+                      <CardContent>
+                        <div className="text-3xl font-bold text-blue-600">{isDefendersActive ? "99.2%" : "96.0%"}</div>
+                        <p className="text-sm text-gray-600">
+                          False positive rate: {isDefendersActive ? "0.8%" : "4.0%"}
+                        </p>
+                      </CardContent>
+                    </Card>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          <TabsContent value="analysis" className="space-y-6">
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center space-x-2">
+                  <Brain className="h-5 w-5" />
+                  <span>AI Security Analysis</span>
+                  {isDefendersActive && (
+                    <Badge variant="secondary" className="bg-green-100 text-green-800">
+                      Multi-AI Enhanced
+                    </Badge>
+                  )}
+                </CardTitle>
+                <CardDescription>Get AI-powered insights and recommendations for your security posture</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-4">
+                  <div className="flex items-center space-x-2 text-sm text-gray-600">
+                    <Zap className="h-4 w-4" />
+                    <span>Powered by {selectedProvider.charAt(0).toUpperCase() + selectedProvider.slice(1)}</span>
+                    {isDefendersActive && (
+                      <>
+                        <span>•</span>
+                        <span className="text-green-600 font-medium">3 AI Defenders Active</span>
+                      </>
+                    )}
+                  </div>
+
+                  <form onSubmit={handleSubmit} className="space-y-4">
+                    <div>
+                      <Label htmlFor="security-query">Security Analysis Query</Label>
+                      <Textarea
+                        id="security-query"
+                        placeholder="Describe your security concern or paste logs for analysis..."
+                        value={input}
+                        onChange={handleInputChange}
+                        className="min-h-[100px]"
+                      />
+                    </div>
+                    <Button type="submit" disabled={isLoading} className="w-full">
+                      {isLoading ? "Analyzing..." : "Analyze Security Issue"}
+                    </Button>
+                  </form>
+
+                  {messages.length > 0 && (
+                    <div className="space-y-4 mt-6">
+                      <h3 className="font-semibold">AI Analysis Results:</h3>
+                      <div className="space-y-3">
+                        {messages.map((message, index) => (
+                          <div
+                            key={index}
+                            className={`p-4 rounded-lg ${
+                              message.role === "user"
+                                ? "bg-blue-50 border-l-4 border-blue-400"
+                                : "bg-gray-50 border-l-4 border-gray-400"
+                            }`}
+                          >
+                            <div className="font-medium text-sm mb-2">
+                              {message.role === "user" ? "Your Query:" : "AI Analysis:"}
+                            </div>
+                            <div className="whitespace-pre-wrap">{message.content}</div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          <TabsContent value="network" className="space-y-6">
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center space-x-2">
+                  <Network className="h-5 w-5" />
+                  <span>Network Security</span>
+                  {isDefendersActive && (
+                    <Badge variant="secondary" className="bg-green-100 text-green-800">
+                      Guardian Active
+                    </Badge>
+                  )}
+                </CardTitle>
+                <CardDescription>Monitor and protect your network infrastructure</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <div className="space-y-4">
+                    <h3 className="font-semibold">Network Monitoring</h3>
+                    <div className="space-y-2">
+                      <div className="flex justify-between">
+                        <span>Firewall Status</span>
+                        <Badge variant="secondary">{isDefendersActive ? "Fortified" : "Active"}</Badge>
+                      </div>
+                      <div className="flex justify-between">
+                        <span>IDS/IPS</span>
+                        <Badge variant="secondary">{isDefendersActive ? "AI-Enhanced" : "Monitoring"}</Badge>
+                      </div>
+                      <div className="flex justify-between">
+                        <span>VPN Connections</span>
+                        <Badge variant="secondary">12 Active</Badge>
+                      </div>
+                      <div className="flex justify-between">
+                        <span>Network Segmentation</span>
+                        <Badge variant="secondary">Configured</Badge>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="space-y-4">
+                    <h3 className="font-semibold">Traffic Analysis</h3>
+                    <div className="space-y-2">
+                      <div className="flex justify-between">
+                        <span>Inbound Traffic</span>
+                        <span className="font-mono">2.3 GB/hr</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span>Outbound Traffic</span>
+                        <span className="font-mono">1.8 GB/hr</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span>Blocked Connections</span>
+                        <span className="font-mono text-red-600">{isDefendersActive ? "89" : "47"}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span>Anomalous Patterns</span>
+                        <span className="font-mono text-orange-600">{isDefendersActive ? "0" : "3"}</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          <TabsContent value="webapp" className="space-y-6">
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center space-x-2">
+                  <Globe className="h-5 w-5" />
+                  <span>Web Application Security</span>
+                  {isDefendersActive && (
+                    <Badge variant="secondary" className="bg-green-100 text-green-800">
+                      Shield Active
+                    </Badge>
+                  )}
+                </CardTitle>
+                <CardDescription>Protect your web applications from threats</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-6">
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <Card>
+                      <CardHeader className="pb-3">
+                        <CardTitle className="text-lg">WAF Status</CardTitle>
+                      </CardHeader>
+                      <CardContent>
+                        <Badge variant="secondary" className="mb-2">
+                          {isDefendersActive ? "AI-Enhanced" : "Active"}
+                        </Badge>
+                        <p className="text-sm text-gray-600">
+                          {isDefendersActive ? "ML-powered blocking" : "Blocking malicious requests"}
+                        </p>
+                      </CardContent>
+                    </Card>
+                    <Card>
+                      <CardHeader className="pb-3">
+                        <CardTitle className="text-lg">SSL/TLS</CardTitle>
+                      </CardHeader>
+                      <CardContent>
+                        <Badge variant="secondary" className="mb-2">
+                          Secure
+                        </Badge>
+                        <p className="text-sm text-gray-600">All certificates valid</p>
+                      </CardContent>
+                    </Card>
+                    <Card>
+                      <CardHeader className="pb-3">
+                        <CardTitle className="text-lg">OWASP Top 10</CardTitle>
+                      </CardHeader>
+                      <CardContent>
+                        <Badge variant="secondary" className="mb-2">
+                          {isDefendersActive ? "AI-Protected" : "Protected"}
+                        </Badge>
+                        <p className="text-sm text-gray-600">All vulnerabilities covered</p>
+                      </CardContent>
+                    </Card>
+                  </div>
+
+                  <div>
+                    <h3 className="font-semibold mb-3">Recent Web Attacks</h3>
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between p-3 border rounded">
+                        <div>
+                          <span className="font-medium">SQL Injection</span>
+                          <span className="text-sm text-gray-600 ml-2">
+                            Blocked {isDefendersActive ? "23" : "15"} attempts
+                          </span>
+                        </div>
+                        <Badge variant="destructive">High</Badge>
+                      </div>
+                      <div className="flex items-center justify-between p-3 border rounded">
+                        <div>
+                          <span className="font-medium">XSS Attack</span>
+                          <span className="text-sm text-gray-600 ml-2">
+                            Blocked {isDefendersActive ? "12" : "8"} attempts
+                          </span>
+                        </div>
+                        <Badge variant="default">Medium</Badge>
+                      </div>
+                      <div className="flex items-center justify-between p-3 border rounded">
+                        <div>
+                          <span className="font-medium">CSRF</span>
+                          <span className="text-sm text-gray-600 ml-2">
+                            Blocked {isDefendersActive ? "7" : "3"} attempts
+                          </span>
+                        </div>
+                        <Badge variant="secondary">Low</Badge>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          <TabsContent value="reports" className="space-y-6">
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center space-x-2">
+                  <FileText className="h-5 w-5" />
+                  <span>Security Reports</span>
+                </CardTitle>
+                <CardDescription>Generate and view security reports</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-4">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <Button variant="outline" className="h-20 flex flex-col bg-transparent">
+                      <FileText className="h-6 w-6 mb-2" />
+                      <span>Daily Security Report</span>
+                    </Button>
+                    <Button variant="outline" className="h-20 flex flex-col bg-transparent">
+                      <AlertTriangle className="h-6 w-6 mb-2" />
+                      <span>Incident Summary</span>
+                    </Button>
+                    <Button variant="outline" className="h-20 flex flex-col bg-transparent">
+                      <Activity className="h-6 w-6 mb-2" />
+                      <span>Performance Metrics</span>
+                    </Button>
+                    <Button variant="outline" className="h-20 flex flex-col bg-transparent">
+                      <Users className="h-6 w-6 mb-2" />
+                      <span>Defender Activity Report</span>
+                    </Button>
+                  </div>
+
+                  <Alert>
+                    <FileText className="h-4 w-4" />
+                    <AlertTitle>Automated Reporting</AlertTitle>
+                    <AlertDescription>
+                      Reports are automatically generated daily and sent to your security team.
+                      {isDefendersActive && " Multi-defender insights included in enhanced reports."}
+                    </AlertDescription>
+                  </Alert>
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+        </Tabs>
+      </div>
+    </div>
+  )
+}
