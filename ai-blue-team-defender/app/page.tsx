@@ -1,6 +1,7 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useRef } from "react"
+import Slider from "@/components/ui/slider"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Badge } from "@/components/ui/badge"
@@ -19,8 +20,12 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog"
-import { Shield, AlertTriangle, Activity, Zap, Brain, Network, Globe, FileText, Key, Users, Copy } from "lucide-react"
+import { Shield, AlertTriangle, Activity, Zap, Brain, Network, Globe, FileText, Key, Users, Copy, Loader2 } from "lucide-react"
 import { useChat } from "ai/react"
+import ReactMarkdown from "react-markdown"
+import remarkGfm from "remark-gfm"
+import { useToast } from "@/components/ui/toast"
+import { ThemeToggle } from "@/components/ui/theme-toggle"
 
 interface DefenderInstance {
   id: string
@@ -46,6 +51,317 @@ export default function BlueTeamDefender() {
   const [defenders, setDefenders] = useState<DefenderInstance[]>([])
   const [isDefendersActive, setIsDefendersActive] = useState(false)
   const [configOpen, setConfigOpen] = useState(false)
+  const { toast } = useToast()
+
+  // --- Real defense agent integration state ---
+  const [agentRunning, setAgentRunning] = useState(false)
+  const [runParams, setRunParams] = useState({
+    provider: selectedProvider,
+    apiKeys: apiKeys,
+    task: "",
+    maxSteps: 40,
+  })
+  const [streamData, setStreamData] = useState<{
+    html: string
+    finalResult: string
+    errors: string
+    traceUrl: string | null
+    currentStep?: number | null
+    maxSteps?: number | null
+    modelActions?: string
+    modelThoughts?: string
+  }>({
+    html: "<h1 style='width:80vw; height:50vh'>Waiting for browser session...</h1>",
+    finalResult: "",
+    errors: "",
+    traceUrl: null,
+    currentStep: null,
+    maxSteps: null,
+    modelActions: "",
+    modelThoughts: "",
+  })
+  const [scale, setScale] = useState(1)
+
+  // Keep params in sync
+  // (update if provider or apiKeys change)
+  // eslint-disable-next-line
+  if (runParams.provider !== selectedProvider || runParams.apiKeys !== apiKeys) {
+    setRunParams({ ...runParams, provider: selectedProvider, apiKeys })
+  }
+
+  // --- Defense Agent Hook ---
+  function useDefenseAgent() {
+    const abortRef = useRef<AbortController | null>(null)
+    const lastDataTsRef = useRef<number>(0)
+    const [retryCount, setRetryCount] = useState(0)
+    const parseErrorCountRef = useRef(0)
+    const reconnectingRef = useRef(false)
+    const wsRef = useRef<WebSocket | null>(null)
+
+    // Confetti launcher
+    const launchConfetti = async () => {
+      if (typeof window !== "undefined") {
+        const confetti = (await import("canvas-confetti")).default
+        confetti({ spread: 120, origin: { y: 0.3 } })
+      }
+    }
+
+    // Start defense agent (opens stream, updates state as data comes in)
+    async function start(params: any, isRetry = false) {
+      setAgentRunning(true)
+      setStreamData({
+        html: "<h1 style='width:80vw; height:50vh'>Launching agent…</h1>",
+        finalResult: "",
+        errors: "",
+        traceUrl: null,
+        currentStep: null,
+        maxSteps: null,
+        modelActions: "",
+        modelThoughts: "",
+      })
+      toast({ title: isRetry ? "Reconnecting stream..." : "Defense agent launched..." })
+
+      // WebSocket support if env present and not already retrying SSE
+      let wsEndpoint = typeof window !== "undefined" ? process.env.NEXT_PUBLIC_DEFENSE_WS : undefined
+      const wsToken = typeof window !== "undefined" ? process.env.NEXT_PUBLIC_DEFENSE_WS_TOKEN : undefined
+      if (wsEndpoint && wsToken && !wsEndpoint.includes("token=")) {
+        wsEndpoint += (wsEndpoint.includes("?") ? "&" : "?") + "token=" + encodeURIComponent(wsToken)
+      }
+      let wsTried = false
+      let finished = false
+
+      // Helper: parse array and update state
+      function handleArray(arr: any[], doneOnce: { current: boolean }) {
+        try {
+          let html = arr[0] || ""
+          let finalResult = arr[1] || ""
+          let errors = arr[2] || ""
+          let modelActions = typeof arr[3] === "string" ? arr[3] : ""
+          let modelThoughts = typeof arr[4] === "string" ? arr[4] : ""
+          let traceUrl = arr[5] || arr[6] || null
+          let currentStep: number | null = typeof arr[10] === "number" ? arr[10] : null
+          let maxSteps: number | null = typeof arr[11] === "number" ? arr[11] : null
+          setStreamData(prev => ({
+            ...prev,
+            html: html || prev.html,
+            finalResult: finalResult || prev.finalResult,
+            errors: errors || prev.errors,
+            traceUrl: traceUrl || prev.traceUrl,
+            currentStep,
+            maxSteps,
+            modelActions: modelActions || prev.modelActions,
+            modelThoughts: modelThoughts || prev.modelThoughts,
+          }))
+          if (traceUrl && finalResult && !doneOnce.current) {
+            launchConfetti()
+            doneOnce.current = true
+          }
+          parseErrorCountRef.current = 0
+        } catch {
+          parseErrorCountRef.current++
+        }
+      }
+
+      // Try WebSocket first if possible
+      if (wsEndpoint && !isRetry) {
+        try {
+          wsTried = true
+          // Use isomorphic-ws for type safety
+          const WS = (await import("isomorphic-ws")).default
+          const ws = new WS(wsEndpoint) as WebSocket
+          wsRef.current = ws
+          let reconnectTimer: NodeJS.Timeout | null = null
+          let doneOnce = { current: false }
+          ws.onopen = () => {
+            ws.send(JSON.stringify(params))
+            resetStallTimer()
+          }
+          ws.onmessage = (event: MessageEvent) => {
+            lastDataTsRef.current = Date.now()
+            reconnectingRef.current = false
+            resetStallTimer()
+            try {
+              const arr = JSON.parse(typeof event.data === "string" ? event.data : "")
+              handleArray(arr, doneOnce)
+            } catch {
+              parseErrorCountRef.current++
+              if (parseErrorCountRef.current > 20) {
+                ws.close()
+                setAgentRunning(false)
+                setStreamData(s => ({ ...s, errors: "WebSocket parse error (corrupt data)" }))
+                toast({ title: "Stream error", description: "Too many parse failures", variant: "destructive" })
+                if (reconnectTimer) clearTimeout(reconnectTimer)
+              }
+            }
+          }
+          ws.onerror = () => {
+            // fallback to SSE
+            if (!finished) {
+              ws.close()
+              nextSSE()
+            }
+          }
+          ws.onclose = () => {
+            if (!finished) {
+              nextSSE()
+            }
+          }
+          // Timeout for stream stall detection:
+          function resetStallTimer() {
+            if (reconnectTimer) clearTimeout(reconnectTimer)
+            reconnectTimer = setTimeout(() => {
+              if (!reconnectingRef.current) {
+                toast({ title: "Stream stalled, attempting reconnect…", variant: "destructive" })
+                reconnectingRef.current = true
+                ws.close()
+                setTimeout(() => {
+                  if (retryCount < 1) {
+                    setRetryCount(r => r + 1)
+                    start(params, true)
+                  } else {
+                    setAgentRunning(false)
+                    setStreamData(s => ({ ...s, errors: "Stream lost. Please try again." }))
+                  }
+                }, 800)
+              }
+            }, 12000)
+          }
+          ws.onclose = ws.onerror = () => {
+            if (!finished) {
+              if (reconnectTimer) clearTimeout(reconnectTimer)
+              nextSSE()
+            }
+          }
+          // Helper for fallback
+          function nextSSE() {
+            finished = true
+            wsRef.current = null
+            start(params, true)
+          }
+          return
+        } catch {
+          // fallback to SSE
+          start(params, true)
+          return
+        }
+      }
+
+      // Else (or as fallback): Use fetch + eventsource-parser for streaming SSE
+      const { createParser } = await import("eventsource-parser")
+      const controller = new AbortController()
+      abortRef.current = controller
+      parseErrorCountRef.current = 0
+      let reconnectTimer: NodeJS.Timeout | null = null
+      let doneOnce = { current: false }
+
+      try {
+        const res = await fetch("/api/defense/start", {
+          method: "POST",
+          body: JSON.stringify(params),
+          headers: { "Content-Type": "application/json" },
+          signal: controller.signal,
+        })
+        if (res.status === 500) {
+          setAgentRunning(false)
+          abortRef.current = null
+          toast({ title: "Backend error", description: "DEFENSE_API_BASE env missing or invalid", variant: "destructive" })
+          setStreamData(s => ({ ...s, errors: "Backend configuration error" }))
+          return
+        } else if (res.status >= 400) {
+          setAgentRunning(false)
+          abortRef.current = null
+          const msg = await res.text()
+          toast({ title: "Upstream Error", description: msg || "Agent failed to start", variant: "destructive" })
+          setStreamData(s => ({ ...s, errors: msg || "Agent failed to start" }))
+          return
+        }
+        if (!res.body) throw new Error("No response body")
+        const reader = res.body.getReader()
+        const decoder = new TextDecoder()
+
+        // Timeout for stream stall detection:
+        function resetStallTimer() {
+          if (reconnectTimer) clearTimeout(reconnectTimer)
+          reconnectTimer = setTimeout(() => {
+            if (!reconnectingRef.current) {
+              toast({ title: "Stream stalled, attempting reconnect…", variant: "destructive" })
+              reconnectingRef.current = true
+              abortRef.current?.abort()
+              setTimeout(() => {
+                if (retryCount < 1) {
+                  setRetryCount(r => r + 1)
+                  start(params, true)
+                } else {
+                  setAgentRunning(false)
+                  setStreamData(s => ({ ...s, errors: "Stream lost. Please try again." }))
+                  abortRef.current = null
+                }
+              }, 800)
+            }
+          }, 12000)
+        }
+        resetStallTimer()
+
+        const parser = createParser((event: any) => {
+          if (event.type === "event" && event.data) {
+            lastDataTsRef.current = Date.now()
+            reconnectingRef.current = false
+            resetStallTimer()
+            try {
+              const arr = JSON.parse(event.data)
+              handleArray(arr, doneOnce)
+              parseErrorCountRef.current = 0
+            } catch {
+              parseErrorCountRef.current++
+              if (parseErrorCountRef.current > 20) {
+                setAgentRunning(false)
+                abortRef.current = null
+                setStreamData(s => ({ ...s, errors: "Stream parse error (corrupt data)" }))
+                toast({ title: "Stream error", description: "Too many parse failures", variant: "destructive" })
+                if (reconnectTimer) clearTimeout(reconnectTimer)
+              }
+            }
+          }
+        })
+        // Read stream and feed parser
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          parser.feed(decoder.decode(value, { stream: true }))
+        }
+        if (reconnectTimer) clearTimeout(reconnectTimer)
+        setAgentRunning(false)
+        abortRef.current = null
+        toast({ title: "Defense completed" })
+      } catch (err: any) {
+        setAgentRunning(false)
+        abortRef.current = null
+        setStreamData(s => ({ ...s, errors: err.message || "Stream error" }))
+        if (err?.message && err.message.includes("timeout")) {
+          toast({ title: "Timeout", description: "The defense agent service did not respond in time.", variant: "destructive" })
+        } else {
+          toast({ title: "Error", description: err.message, variant: "destructive" })
+        }
+      }
+    }
+
+    // Stop defense agent
+    async function stop() {
+      setAgentRunning(false)
+      abortRef.current?.abort()
+      abortRef.current = null
+      if (wsRef.current) {
+        wsRef.current.close()
+        wsRef.current = null
+      }
+      toast({ title: "Defense agent stop requested" })
+      await fetch("/api/defense/stop", { method: "POST" })
+    }
+
+    return { start, stop }
+  }
+
+  const defenseAgent = useDefenseAgent()
 
   // Load API keys from localStorage on mount
   useEffect(() => {
@@ -118,6 +434,11 @@ export default function BlueTeamDefender() {
         })),
       )
     }, 5000)
+
+    toast({
+      title: "Multi-Defender Activated",
+      description: "Three AI defenders are now protecting your infrastructure.",
+    })
   }
 
   // Deactivate defenders
@@ -125,6 +446,10 @@ export default function BlueTeamDefender() {
     setDefenders([])
     setIsDefendersActive(false)
     setThreatLevel(2)
+    toast({
+      title: "Defenders Deactivated",
+      description: "Multi-defender protocol has been turned off.",
+    })
   }
 
   const { messages, input, handleInputChange, handleSubmit, isLoading } = useChat({
@@ -132,6 +457,14 @@ export default function BlueTeamDefender() {
     body: {
       provider: selectedProvider,
       apiKeys: apiKeys,
+      multi: isDefendersActive,
+      providers: isDefendersActive
+        ? {
+            network: defenders.find((d) => d.name === "Network Guardian")?.provider || "groq",
+            web: defenders.find((d) => d.name === "Web Shield")?.provider || "gemini",
+            incident: defenders.find((d) => d.name === "Incident Responder")?.provider || "mistral",
+          }
+        : undefined,
     },
   })
 
@@ -216,17 +549,18 @@ export default function BlueTeamDefender() {
 
   return (
     <div className="min-h-screen bg-slate-50 p-6">
-      <div className="max-w-7xl mx-auto space-y-6">
+      <div className={`max-w-7xl mx-auto space-y-6 ${simulationActive && successCount > 0 ? "ring-4 ring-red-500/30" : ""}`}>
         {/* Header */}
         <div className="flex items-center justify-between">
           <div className="flex items-center space-x-3">
-            <Shield className="h-8 w-8 text-blue-600" />
+            <Shield className={`h-8 w-8 text-blue-600 ${threatLevel >= 4 || isDefendersActive ? "animate-pulse-fast" : ""}`} />
             <div>
-              <h1 className="text-3xl font-bold text-gray-900">AI Blue Team Defender</h1>
-              <p className="text-gray-600">Self-Replicating AI-Powered Security Defense System</p>
+              <h1 className="text-3xl font-bold text-gray-900 dark:text-gray-100">AI Blue Team Defender</h1>
+              <p className="text-gray-600 dark:text-gray-300">Self-Replicating AI-Powered Security Defense System</p>
             </div>
           </div>
           <div className="flex items-center space-x-4">
+            <ThemeToggle />
             <Dialog open={configOpen} onOpenChange={setConfigOpen}>
               <DialogTrigger asChild>
                 <Button variant="outline" size="sm">
@@ -418,7 +752,7 @@ export default function BlueTeamDefender() {
             <TabsTrigger value="dashboard">Dashboard</TabsTrigger>
             <TabsTrigger value="defenders">Defenders</TabsTrigger>
             <TabsTrigger value="threats">Threats</TabsTrigger>
-            <TabsTrigger value="analysis">AI Analysis</TabsTrigger>
+            <TabsTrigger value="analysis">Active Defense</TabsTrigger>
             <TabsTrigger value="network">Network</TabsTrigger>
             <TabsTrigger value="webapp">Web Apps</TabsTrigger>
             <TabsTrigger value="reports">Reports</TabsTrigger>
@@ -624,7 +958,269 @@ export default function BlueTeamDefender() {
             </Card>
           </TabsContent>
 
-          <TabsContent value="analysis" className="space-y-6">
+          <TabsContent value="oblivion" className="space-y-6">
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center space-x-2">
+                  <AlertTriangle className="h-5 w-5 text-red-600" />
+                  <span>Oblivion Red Team Simulation</span>
+                </CardTitle>
+                <CardDescription>
+                  Simulate relentless red-team attacks from Oblivion AI. See if your blue team defense holds!
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-6">
+                  <Button
+                    onClick={() => simulationActive ? stopOblivionSimulation() : startOblivionSimulation()}
+                    variant={simulationActive ? "destructive" : "default"}
+                  >
+                    {simulationActive ? "Stop Simulation" : "Engage Oblivion"}
+                  </Button>
+                  <span className="text-xs text-gray-500 dark:text-gray-400">
+                    {simulationActive ? "Simulation running..." : "Idle"}
+                  </span>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+                  <Card className="bg-green-50 dark:bg-green-900/20 border-green-200 dark:border-green-700">
+                    <CardHeader>
+                      <CardTitle className="text-green-700 dark:text-green-200">Blocked Attacks</CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="text-3xl font-bold text-green-600 dark:text-green-200">{blockedCount}</div>
+                    </CardContent>
+                  </Card>
+                  <Card className="bg-red-50 dark:bg-red-900/20 border-red-200 dark:border-red-700">
+                    <CardHeader>
+                      <CardTitle className="text-red-700 dark:text-red-200">Successful Breaches</CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="text-3xl font-bold text-red-600 dark:text-red-200">{successCount}</div>
+                    </CardContent>
+                  </Card>
+                  <Card>
+                    <CardHeader>
+                      <CardTitle>Attack Intensity</CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="flex items-center gap-2">
+                        <Progress value={intensityLevel} className="h-2 flex-1" />
+                        <span className="text-sm">{intensityLevel}%</span>
+                      </div>
+                    </CardContent>
+                  </Card>
+                </div>
+                {simulationActive && successCount > 0 && !isDefendersActive && (
+                  <Alert className="border-red-300 bg-red-100 dark:bg-red-900/30 dark:border-red-700 mb-6">
+                    <AlertTriangle className="h-4 w-4 text-red-600" />
+                    <AlertTitle className="text-red-900 dark:text-red-200">Oblivion Breach Warning</AlertTitle>
+                    <AlertDescription className="text-red-800 dark:text-red-200">
+                      Some attacks are succeeding! <strong>Activate your multi-defender protocol now.</strong>
+                    </AlertDescription>
+                  </Alert>
+                )}
+                <div>
+                  <h3 className="font-semibold mb-2">Attack Feed</h3>
+                  <div className="space-y-2 max-h-96 overflow-y-auto">
+                    {attackEvents.length === 0 && (
+                      <div className="text-gray-500 dark:text-gray-400 text-sm">No attacks yet.</div>
+                    )}
+                    {attackEvents.map(event => (
+                      <div
+                        key={event.id}
+                        className={`flex items-center justify-between p-3 border rounded-lg
+                          ${event.success
+                            ? "bg-red-50 border-red-300 dark:bg-red-900/30 dark:border-red-700"
+                            : "bg-green-50 border-green-300 dark:bg-green-900/30 dark:border-green-700"}
+                        `}
+                      >
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <Badge variant={event.success ? "destructive" : "secondary"}>
+                              {event.success ? "Breach" : "Blocked"}
+                            </Badge>
+                            <span className="font-medium">{event.vector}</span>
+                          </div>
+                          <div className="text-xs text-gray-500 dark:text-gray-400">
+                            Severity: {event.severity} • {event.time}
+                          </div>
+                        </div>
+                        <span className={`text-xs font-bold ${event.success ? "text-red-600 dark:text-red-200" : "text-green-700 dark:text-green-200"}`}>
+                          {event.success ? "⚠️" : "✔️"}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+          <TabsContent value="analysis" className="space-y-6 relative">
+            <Card className="relative">
+              <CardHeader>
+                <CardTitle className="flex items-center space-x-2">
+                  <Brain className="h-5 w-5" />
+                  <span>Active Defense Control Panel</span>
+                </CardTitle>
+                <CardDescription>
+                  Launch and control a real browser-based defense agent against live attackers.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <form
+                  className="grid grid-cols-1 md:grid-cols-2 gap-6 items-end mb-6"
+                  onSubmit={e => {
+                    e.preventDefault()
+                    if (!agentRunning) defenseAgent.start(runParams)
+                  }}
+                >
+                  <div className="space-y-4">
+                    <Label htmlFor="defense-task">Defense Task</Label>
+                    <Textarea
+                      id="defense-task"
+                      value={runParams.task}
+                      placeholder="Describe the blue team defense task or scenario…"
+                      onChange={e => setRunParams({ ...runParams, task: e.target.value })}
+                      disabled={agentRunning}
+                    />
+                    <div className="flex gap-4 items-center">
+                      <Label htmlFor="maxSteps">Max Steps</Label>
+                      <input
+                        id="maxSteps"
+                        type="number"
+                        min={1}
+                        max={200}
+                        step={1}
+                        className="border rounded px-2 py-1 w-24 bg-background text-foreground"
+                        value={runParams.maxSteps}
+                        onChange={e => setRunParams({ ...runParams, maxSteps: Number(e.target.value) })}
+                        disabled={agentRunning}
+                      />
+                    </div>
+                  </div>
+                  <div className="flex gap-4 items-center h-full">
+                    <Button
+                      type="submit"
+                      disabled={agentRunning}
+                      className="w-32"
+                      variant="default"
+                    >
+                      {agentRunning ? "Running..." : "Start"}
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="destructive"
+                      disabled={!agentRunning}
+                      onClick={() => defenseAgent.stop()}
+                      className={`w-32 ${agentRunning ? "animate-pulse-fast" : ""}`}
+                    >
+                      Stop
+                    </Button>
+                  </div>
+                </form>
+                <div className="mb-6">
+                  <div className="rounded border bg-background overflow-hidden relative" style={{ minHeight: "50vh", border: "2px solid #6366f1" }}>
+                    {/* Live browser view */}
+                    <div
+                      style={{
+                        transform: `scale(${scale})`,
+                        transformOrigin: "top left",
+                        width: scale !== 1 ? `${100 / scale}%` : undefined,
+                        minHeight: "50vh",
+                        transition: "transform 0.25s",
+                      }}
+                    >
+                      <div dangerouslySetInnerHTML={{ __html: streamData.html }} />
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-4 mt-2">
+                    <Label htmlFor="scale-slider" className="text-xs">Zoom</Label>
+                    <div className="flex-1 max-w-xs">
+                      <Slider
+                        id="scale-slider"
+                        min={0.25}
+                        max={1}
+                        step={0.01}
+                        value={[scale]}
+                        onValueChange={v => setScale(v[0])}
+                        disabled={!agentRunning}
+                        className="w-full"
+                      />
+                    </div>
+                    <span className="text-xs text-muted-foreground">{Math.round(scale * 100)}%</span>
+                  </div>
+                  {/* Progress bar */}
+                  {streamData.currentStep && streamData.maxSteps && (
+                    <div className="flex items-center mt-3 gap-3">
+                      <Progress
+                        value={Math.round((streamData.currentStep / streamData.maxSteps) * 100)}
+                        className={`flex-1 h-2
+                          ${((streamData.currentStep / streamData.maxSteps) * 100) > 80
+                            ? "bg-green-500"
+                            : ((streamData.currentStep / streamData.maxSteps) * 100) > 50
+                              ? "bg-yellow-500"
+                              : "bg-blue-500"
+                          }`}
+                      />
+                      <span className="text-xs text-muted-foreground">
+                        Step {streamData.currentStep} / {streamData.maxSteps}
+                      </span>
+                    </div>
+                  )}
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <Label>Final Result</Label>
+                    <Textarea
+                      value={streamData.finalResult}
+                      readOnly
+                      className="bg-muted text-foreground min-h-[90px]"
+                    />
+                  </div>
+                  <div>
+                    <Label>Errors</Label>
+                    <Textarea
+                      value={streamData.errors}
+                      readOnly
+                      className="bg-muted text-destructive min-h-[90px]"
+                    />
+                  </div>
+                </div>
+                {/* Accordion for model actions/thoughts */}
+                <div className="mt-4">
+                  <div className="rounded-md border bg-muted">
+                    <Tabs defaultValue="actions" className="w-full">
+                      <TabsList className="w-full grid grid-cols-2">
+                        <TabsTrigger value="actions">Model Actions</TabsTrigger>
+                        <TabsTrigger value="thoughts">Model Thoughts</TabsTrigger>
+                      </TabsList>
+                      <TabsContent value="actions">
+                        <Textarea
+                          value={streamData.modelActions || ""}
+                          readOnly
+                          className="bg-background text-foreground min-h-[80px]"
+                        />
+                      </TabsContent>
+                      <TabsContent value="thoughts">
+                        <Textarea
+                          value={streamData.modelThoughts || ""}
+                          readOnly
+                          className="bg-background text-foreground min-h-[80px]"
+                        />
+                      </TabsContent>
+                    </Tabs>
+                  </div>
+                </div>
+                {streamData.traceUrl && (
+                  <div className="mt-4">
+                    <a href={streamData.traceUrl} download className="underline text-blue-600 dark:text-blue-400">
+                      Download Trace
+                    </a>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </TabsContent>
             <Card>
               <CardHeader>
                 <CardTitle className="flex items-center space-x-2">
@@ -660,31 +1256,67 @@ export default function BlueTeamDefender() {
                         value={input}
                         onChange={handleInputChange}
                         className="min-h-[100px]"
+                        disabled={isLoading}
                       />
                     </div>
-                    <Button type="submit" disabled={isLoading} className="w-full">
+                    <Button type="submit" disabled={isLoading} className="w-full flex items-center justify-center">
+                      {isLoading && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
                       {isLoading ? "Analyzing..." : "Analyze Security Issue"}
                     </Button>
                   </form>
 
                   {messages.length > 0 && (
                     <div className="space-y-4 mt-6">
-                      <h3 className="font-semibold">AI Analysis Results:</h3>
-                      <div className="space-y-3">
-                        {messages.map((message, index) => (
-                          <div
-                            key={index}
-                            className={`p-4 rounded-lg ${
-                              message.role === "user"
-                                ? "bg-blue-50 border-l-4 border-blue-400"
-                                : "bg-gray-50 border-l-4 border-gray-400"
-                            }`}
+                  <h3 className="font-semibold">AI Analysis Results:</h3>
+                  <div className="space-y-3 max-h-96 overflow-y-auto">
+                    {isLoading && (
+                      <div className="relative">
+                        <div className="h-32 animate-pulse bg-muted rounded absolute inset-0 z-10 opacity-80" />
+                      </div>
+                    )}
+                    {messages.map((message, index) => (
+                      <div
+                        key={index}
+                        className={`p-4 rounded-lg relative group ${
+                          message.role === "user"
+                            ? "bg-blue-50 border-l-4 border-blue-400 dark:bg-blue-900/40 dark:border-blue-700"
+                            : "bg-gray-50 border-l-4 border-gray-400 dark:bg-zinc-900/40 dark:border-gray-700"
+                        }`}
+                      >
+                        <div className="font-medium text-sm mb-2 flex items-center justify-between">
+                          <span>
+                            {message.role === "user" ? "Your Query:" : "AI Analysis:"}
+                          </span>
+                          {message.role === "assistant" && (
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="opacity-70 hover:opacity-100 transition-opacity absolute top-2 right-2"
+                              onClick={() => {
+                                navigator.clipboard.writeText(message.content)
+                                toast({ title: "Copied" })
+                              }}
+                              aria-label="Copy analysis"
+                              tabIndex={0}
+                            >
+                              <Copy className="h-4 w-4" />
+                            </Button>
+                          )}
+                        </div>
+                        {message.role === "assistant" ? (
+                          <ReactMarkdown
+                            remarkPlugins={[remarkGfm]}
+                            className="prose prose-sm dark:prose-invert max-w-none"
                           >
-                            <div className="font-medium text-sm mb-2">
-                              {message.role === "user" ? "Your Query:" : "AI Analysis:"}
-                            </div>
-                            <div className="whitespace-pre-wrap">{message.content}</div>
-                          </div>
+                            {message.content}
+                          </ReactMarkdown>
+                        ) : (
+                          <div className="whitespace-pre-wrap">{message.content}</div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
                         ))}
                       </div>
                     </div>
