@@ -13,11 +13,18 @@ export async function POST(req: NextRequest) {
   const abortController = new AbortController()
   const timeout = setTimeout(() => abortController.abort(), 10000)
   let res: Response
+  const token = process.env.DEFENSE_API_TOKEN
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+  }
+  if (token) {
+    headers["Authorization"] = `Bearer ${token}`
+  }
   try {
     res = await fetch(target, {
       method: "POST",
       body: JSON.stringify(body),
-      headers: { "Content-Type": "application/json" },
+      headers,
       signal: abortController.signal,
     })
   } catch (err) {

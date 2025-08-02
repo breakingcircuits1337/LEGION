@@ -11,8 +11,13 @@ export async function POST() {
   const abortController = new AbortController()
   const timeout = setTimeout(() => abortController.abort(), 10000)
   let res: Response
+  const token = process.env.DEFENSE_API_TOKEN
+  const headers: Record<string, string> = {}
+  if (token) {
+    headers["Authorization"] = `Bearer ${token}`
+  }
   try {
-    res = await fetch(target, { method: "POST", signal: abortController.signal })
+    res = await fetch(target, { method: "POST", signal: abortController.signal, headers })
   } catch (err) {
     clearTimeout(timeout)
     if (err instanceof Error && err.name === "AbortError") {

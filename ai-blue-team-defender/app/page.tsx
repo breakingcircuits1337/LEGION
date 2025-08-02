@@ -122,7 +122,11 @@ export default function BlueTeamDefender() {
       toast({ title: isRetry ? "Reconnecting stream..." : "Defense agent launched..." })
 
       // WebSocket support if env present and not already retrying SSE
-      const wsEndpoint = typeof window !== "undefined" ? process.env.NEXT_PUBLIC_DEFENSE_WS : undefined
+      let wsEndpoint = typeof window !== "undefined" ? process.env.NEXT_PUBLIC_DEFENSE_WS : undefined
+      const wsToken = typeof window !== "undefined" ? process.env.NEXT_PUBLIC_DEFENSE_WS_TOKEN : undefined
+      if (wsEndpoint && wsToken && !wsEndpoint.includes("token=")) {
+        wsEndpoint += (wsEndpoint.includes("?") ? "&" : "?") + "token=" + encodeURIComponent(wsToken)
+      }
       let wsTried = false
       let finished = false
 
