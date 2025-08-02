@@ -132,6 +132,14 @@ export default function BlueTeamDefender() {
     body: {
       provider: selectedProvider,
       apiKeys: apiKeys,
+      multi: isDefendersActive,
+      providers: isDefendersActive
+        ? {
+            network: defenders.find((d) => d.name === "Network Guardian")?.provider || "groq",
+            web: defenders.find((d) => d.name === "Web Shield")?.provider || "gemini",
+            incident: defenders.find((d) => d.name === "Incident Responder")?.provider || "mistral",
+          }
+        : undefined,
     },
   })
 
